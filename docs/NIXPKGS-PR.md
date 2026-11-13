@@ -28,6 +28,17 @@ helper refuses to execute user-owned binaries as root.
       recipe was built against `nixos-unstable` in a container with the same
       `fetchFromGitHub` hash
 
+## Disclosure
+
+The packaging (recipe, module, release note) was prepared with an LLM-based
+tool: OpenCode (DeepSeek V4.1 Flash Free). I reviewed every change and built
+and tested it before submitting:
+
+- `nix build github:dodry-question/vpntui/v1.0.1#default` in a clean container;
+- the recipe in this PR built against `nixos-unstable`;
+- `programs.vpntui` evaluated with two users (sudo rule, `VPNTUI_HELPER`,
+  `environment.systemPackages`).
+
 ## Notes for reviewers
 
 Tests for the TUI itself need a TTY and are excluded via `enabledTestPaths`;
