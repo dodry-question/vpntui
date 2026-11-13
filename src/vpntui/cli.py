@@ -310,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     args = parser.parse_args(argv)
-    if args.command in ("status", "tui"):
+    if args.command in ("status", "tui", "doctor"):
         _prepare()
     if args.command == "launch":
         _prepare()

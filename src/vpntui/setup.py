@@ -158,7 +158,7 @@ def uninstall(remove_config: bool = False) -> int:
 
 
 def doctor() -> int:
-    print(f"vpntui:      {shutil.which('vpntui') or sys.argv[0]}")
+    print(f"vpntui:      {' '.join(paths.entry_command())}")
     print(f"python:      {sys.version.split()[0]}")
     print(f"config:      {paths.CONFIG_DIR}")
     print(f"data:        {paths.DATA_DIR}")
