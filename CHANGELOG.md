@@ -9,6 +9,7 @@ First public release.
   Rules, Logs, Settings, Applications.
 - Installed-application rules: always-VPN toggle, per-app server (`Auto` uses
   the server selected on the Proxy page), desktop `Exec=` rewrite and restore.
+  Read-only system shortcuts get a per-user override instead of being edited.
 - Subscription import from URL/file/stdin: `vless`, `vmess`, `trojan`, `ss`,
   `hysteria2`, base64 lists and Xray JSON; selected server survives re-import.
 - Xray core manager: system package first, official release download with

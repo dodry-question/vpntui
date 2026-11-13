@@ -520,7 +520,7 @@ def autostart_enabled() -> bool:
 
 
 def terminal_command() -> str:
-    executable = shutil.which("vpntui") or f"{sys.executable} -m vpntui"
+    executable = shlex.join(P.entry_command())
     if shutil.which("foot"):
         return f"foot -W 140x42 -T VPN -e {executable}"
     if shutil.which("kitty"):
@@ -1256,6 +1256,7 @@ class AppsView(Vertical):
         table.add_column("Приложение", key="name")
         table.add_column("VPN", key="vpn", width=3)
         table.add_column("Сервер", key="server", width=9)
+        table.cursor_type = "row"
         self.rebuild()
 
     def on_show(self) -> None:
@@ -1326,7 +1327,11 @@ class AppsView(Vertical):
             self.app.notify("Нет приложений", severity="warning")
             return
         enabled = not bool(entry.get("always_vpn"))
-        entry = app_rules.enable_always(entry, enabled)
+        try:
+            entry = app_rules.enable_always(entry, enabled)
+        except (app_rules.DesktopError, OSError) as exc:
+            self.app.notify(f"{entry.get('name') or entry['id']}: {exc}", severity="error")
+            return
         self.app.refresh_all(True)
         self.rebuild()
         self.app.notify(f"{entry.get('name') or entry['id']}: "

@@ -84,3 +84,36 @@ def test_qoder_migration_keeps_existing_launcher(tmp_path, monkeypatch):
     # idempotent
     apps.migrate_legacy()
     assert len([a for a in apps.load_apps() if a["id"] == "qoder"]) == 1
+
+
+def test_system_wide_app_gets_user_override(tmp_path, monkeypatch):
+    system = tmp_path / "applications"
+    system.mkdir()
+    desktop = system / "system-app.desktop"
+    desktop.write_text(DESKTOP)
+    desktop.chmod(0o444)
+    system.chmod(0o555)
+
+    user = tmp_path / "home-applications"
+    user.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_DATA_DIRS", str(tmp_path))
+    monkeypatch.setattr(paths, "APPLICATIONS", user)
+    monkeypatch.setattr(paths, "APPS", tmp_path / "apps.json")
+    monkeypatch.setattr(paths, "DESKTOP_BACKUPS", tmp_path / "backups")
+
+    try:
+        found = next(a for a in apps.discover_installed() if a["id"] == "system-app.desktop")
+        entry = apps.enable_always(found, True)
+        override = user / "system-app.desktop"
+        assert entry["override"] is True
+        assert entry["desktop"] == str(override)
+        assert "launch-desktop" in override.read_text()
+        assert desktop.read_text() == DESKTOP  # system file untouched
+
+        apps.enable_always(apps.get_app("system-app.desktop"), False)
+        assert not override.exists()
+        assert desktop.read_text() == DESKTOP
+        assert apps.get_app("system-app.desktop")["desktop"] == str(desktop)
+    finally:
+        system.chmod(0o755)

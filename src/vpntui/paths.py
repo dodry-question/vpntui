@@ -85,6 +85,27 @@ FILE_MAP = {
 }
 
 
+def entry_command() -> list[str]:
+    """Command that starts *this* installation of vpntui.
+
+    ``shutil.which`` may resolve to an unrelated or legacy launcher (for
+    example an old ``~/scripts/vpn`` install), so the console script is only
+    trusted when it lives next to the running interpreter.  Otherwise the
+    package is started through ``python -m vpntui``.
+    """
+    import shutil
+    import sys
+
+    found = shutil.which("vpntui")
+    if found:
+        try:
+            if pathlib.Path(found).resolve().parent == pathlib.Path(sys.executable).resolve().parent:
+                return [found]
+        except OSError:
+            pass
+    return [sys.executable, "-m", "vpntui"]
+
+
 def ensure_layout() -> None:
     """Create the XDG directories and migrate the old layout once."""
     for path in (CONFIG_DIR, DATA_DIR, STATE_DIR, CACHE_DIR, CORE_DIR,

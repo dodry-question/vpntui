@@ -20,6 +20,8 @@ VPN network:     Roblox/Qoder ── netns ──► Xray ──► subscription
   entry can be marked *always through VPN* and assigned a server (`Auto` uses
   the server currently selected on the **Proxy** page). Toggling the rule
   rewrites the application's `Exec=` line and restores it when disabled.
+  System-wide entries in `/usr/share/applications` are never modified: a
+  per-user copy is created in `~/.local/share/applications` instead.
 * **Subscriptions** — import a URL or file with `vless://`, `vmess://`,
   `trojan://`, `ss://`, `hysteria2://` links, a base64 list, or raw Xray JSON.
   The selected server survives re-import when it still exists.

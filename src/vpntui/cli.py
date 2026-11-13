@@ -127,8 +127,12 @@ def cmd_apps(args) -> int:
                 return 1
         if args.always:
             entry["always_vpn"] = True
-        entry = apps.enable_always(entry, bool(entry.get("always_vpn")),
-                                   write_desktop=bool(entry.get("desktop")))
+        try:
+            entry = apps.enable_always(entry, bool(entry.get("always_vpn")),
+                                       write_desktop=bool(entry.get("desktop")))
+        except apps.DesktopError as exc:
+            print(f"Ошибка ярлыка: {exc}", file=sys.stderr)
+            return 1
         print(json.dumps(entry, ensure_ascii=False, indent=1))
         return 0
     if args.action == "remove":
@@ -139,7 +143,11 @@ def cmd_apps(args) -> int:
         if not entry:
             print("не найдено", file=sys.stderr)
             return 1
-        apps.enable_always(entry, args.value == "on")
+        try:
+            apps.enable_always(entry, args.value == "on")
+        except apps.DesktopError as exc:
+            print(f"Ошибка ярлыка: {exc}", file=sys.stderr)
+            return 1
         print(f"{args.id}: {'always VPN' if args.value == 'on' else 'direct'}")
         return 0
     if args.action == "server":
@@ -309,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_launch(args.app, args.extra)
     if args.command == "launch-desktop":
         _prepare()
-        return apps.launch_desktop(args.app, [a for a in args.extra if not a.startswith("-")])
+        return apps.launch_desktop(args.app, list(args.extra))
     if args.command == "sub":
         _prepare()
         return cmd_sub(args)

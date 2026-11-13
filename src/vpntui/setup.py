@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -83,9 +84,7 @@ def install_browser_wrapper() -> pathlib.Path:
 
 
 def desktop_entry() -> pathlib.Path:
-    executable = shutil.which("vpntui")
-    if not executable:
-        executable = f"{sys.executable} -m vpntui"
+    executable = shlex.join(paths.entry_command())
     content = (
         "[Desktop Entry]\n"
         "Type=Application\n"

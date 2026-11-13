@@ -126,13 +126,20 @@ def add_app(entry: dict) -> dict:
     return entry
 
 
+class DesktopError(RuntimeError):
+    """Raised when an application shortcut cannot be rewritten."""
+
+
 def remove_app(app_id: str, restore_desktop: bool = True) -> bool:
     apps = load_apps()
     entry = next((a for a in apps if a["id"] == app_id), None)
     if not entry:
         return False
-    if restore_desktop and entry.get("managed"):
-        _write_desktop(entry, enabled=False)
+    if restore_desktop:
+        try:
+            _restore(entry)
+        except OSError:
+            pass
     save_apps([a for a in apps if a["id"] != app_id])
     return True
 
@@ -140,6 +147,43 @@ def remove_app(app_id: str, restore_desktop: bool = True) -> bool:
 def _desktop_path(entry: dict) -> pathlib.Path | None:
     raw = entry.get("desktop")
     return pathlib.Path(raw) if raw else None
+
+
+def _writable(path: pathlib.Path) -> bool:
+    return path.is_file() and os.access(path, os.W_OK) and os.access(path.parent, os.W_OK)
+
+
+def _read_exec(path: pathlib.Path) -> str:
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        parser.read(path, encoding="utf-8")
+        return parser["Desktop Entry"].get("Exec", "")
+    except Exception:
+        return ""
+
+
+def _prepare_target(entry: dict, path: pathlib.Path) -> pathlib.Path:
+    """Return a writable desktop file, copying system-wide ones per user.
+
+    ``/usr/share/applications`` and flatpak exports are read-only, so a
+    same-named copy is created in ``$XDG_DATA_HOME/applications`` — that is
+    the standard XDG way to override an application entry without root.
+    """
+    if _writable(path):
+        return path
+    paths.APPLICATIONS.mkdir(parents=True, exist_ok=True)
+    target = paths.APPLICATIONS / path.name
+    if target == path:
+        raise DesktopError(f"нет прав на запись: {path}")
+    if not target.is_file():
+        try:
+            shutil.copy2(path, target)
+            target.chmod(target.stat().st_mode | 0o600)
+        except OSError as exc:
+            raise DesktopError(f"не удалось скопировать {path}: {exc}") from exc
+    entry.setdefault("system_desktop", str(path))
+    entry["override"] = True
+    return target
 
 
 def _backup(entry: dict, text: str) -> None:
@@ -152,9 +196,13 @@ def _backup(entry: dict, text: str) -> None:
         backup.write_text(text)
 
 
+def _entry_command() -> str:
+    return shlex.join(paths.entry_command())
+
+
 def _exec_line(entry: dict, enabled: bool) -> str:
     if enabled:
-        shim = shlex.join([sys.executable, "-m", "vpntui", "launch-desktop", entry["id"]])
+        shim = f"{_entry_command()} launch-desktop {shlex.quote(entry['id'])}"
         return f"Exec={shim} %U\n"
     original = entry.get("restore_exec") or entry.get("original_exec") or ""
     if original and not original.startswith("Exec="):
@@ -164,7 +212,7 @@ def _exec_line(entry: dict, enabled: bool) -> str:
 
 def _write_desktop(entry: dict, enabled: bool) -> bool:
     path = _desktop_path(entry)
-    if not path or not path.is_file():
+    if not path or not path.is_file() or not _writable(path):
         return False
     text = path.read_text(encoding="utf-8")
     _backup(entry, text)
@@ -183,22 +231,44 @@ def _write_desktop(entry: dict, enabled: bool) -> bool:
     return True
 
 
+def _restore(entry: dict) -> bool:
+    """Undo a rule: drop the user override or write back the original Exec."""
+    if entry.get("override") and entry.get("system_desktop"):
+        target = pathlib.Path(entry.get("desktop") or "")
+        try:
+            if target.is_file() and target.parent.resolve() == paths.APPLICATIONS.resolve():
+                target.unlink()
+        except OSError:
+            pass
+        entry["desktop"] = entry["system_desktop"]
+        entry.pop("override", None)
+        entry["managed"] = False
+        return True
+    if entry.get("managed") and _desktop_path(entry):
+        ok = _write_desktop(entry, False)
+        entry["managed"] = False
+        return ok
+    return False
+
+
 def enable_always(entry: dict, enabled: bool, write_desktop: bool = True) -> dict:
     """Mark an app as always-VPN and optionally rewrite its .desktop Exec."""
     entry = dict(entry)
     entry["always_vpn"] = bool(enabled)
-    if write_desktop and entry.get("desktop"):
-        path = pathlib.Path(entry["desktop"])
-        if path.is_file():
-            if "original_exec" not in entry:
-                parser = configparser.ConfigParser(interpolation=None, strict=False)
-                try:
-                    parser.read(path, encoding="utf-8")
-                    entry["original_exec"] = parser["Desktop Entry"].get("Exec", "")
-                except Exception:
-                    entry["original_exec"] = ""
-            if _write_desktop(entry, enabled):
+    path = _desktop_path(entry)
+    if write_desktop and path and path.is_file():
+        if "original_exec" not in entry:
+            entry["original_exec"] = _read_exec(path)
+        if enabled:
+            target = _prepare_target(entry, path)
+            entry["desktop"] = str(target)
+            if _write_desktop(entry, True):
                 entry["managed"] = True
+        else:
+            # Toggling the rule in the UI takes over from a legacy wrapper.
+            if entry.pop("legacy_launcher", None) and entry.get("desktop"):
+                entry["managed"] = True
+            _restore(entry)
     add_app(entry)
     return entry
 
