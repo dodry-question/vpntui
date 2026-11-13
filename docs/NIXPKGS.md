@@ -12,7 +12,7 @@ The repository already contains everything needed for a nixpkgs submission:
 ## 1. Tag a release
 
 ```bash
-git tag -a v1.0.0 -m 'vpntui 1.0.0'
+git tag -a v1.0.1 -m 'vpntui 1.0.1'
 git push origin master --tags
 ```
 
@@ -20,15 +20,15 @@ nixpkgs builds from a GitHub tag, not from the working tree.
 
 ## 2. Source hash
 
-The recipe pins the source hash for the `v1.0.0` tag:
+The recipe pins the source hash for the `v1.0.1` tag:
 
 ```
-hash = "sha256-WQxoJAomGysJvdVlpKZqAh+NCmU4DIb7YfOztwMBzkI=";
+hash = "sha256-PJPCHngyTeu8xZYWuzZ5yppGhPAwhi/2KjtTaiA5pcY=";
 ```
 
-The tag must be pushed to GitHub first (`git push origin v1.0.0`); the hash was
-computed from the release tree with `nix hash path --sri` on a clean
-`git archive` export, which matches `fetchFromGitHub` after root stripping.
+The tag must be pushed to GitHub first (`git push origin v1.0.1`); the hash was
+computed with `nix store prefetch-file --unpack` from the GitHub tag
+archive, which is exactly what `fetchFromGitHub` unpacks.
 
 When the tag or any tracked file changes, recompute it. In a nixpkgs checkout:
 
@@ -38,7 +38,7 @@ nix build --impure --expr '
   in pkgs.fetchFromGitHub {
     owner = "dodry-question";
     repo = "vpntui";
-    tag = "v1.0.0";
+    tag = "v1.0.1";
     hash = "";
   }'
 ```
@@ -72,8 +72,8 @@ build. `vpntui core install` is only for non-Nix installations.
 ```bash
 git checkout -b vpntui
 git add pkgs/by-name/vp/vpntui/package.nix nixos/modules/programs/vpntui.nix
-git commit -m 'vpntui: init at 1.0.0'
-gh pr create --repo NixOS/nixpkgs --title 'vpntui: init at 1.0.0' --body-file docs/NIXPKGS-PR.md
+git commit -m 'vpntui: init at 1.0.1'
+gh pr create --repo NixOS/nixpkgs --title 'vpntui: init at 1.0.1' --body-file docs/NIXPKGS-PR.md
 ```
 
 The repository is public, which is required for `fetchFromGitHub`. CI runs
