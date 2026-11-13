@@ -1,56 +1,88 @@
-{ lib
-, python3
-, xray
-, iproute2
-, util-linux
-, slirp4netns
-, curl
-, libnotify
-, coreutils
-, makeWrapper
+{
+  lib,
+  python3Packages,
+  xray,
+  iproute2,
+  util-linux,
+  slirp4netns,
+  curl,
+  libnotify,
+  coreutils,
+  makeWrapper,
 }:
 
-python3.pkgs.buildPythonApplication rec {
+python3Packages.buildPythonApplication (finalAttrs: {
   pname = "vpntui";
   version = "1.0.1";
   pyproject = true;
 
   src = lib.cleanSourceWith {
     src = lib.cleanSource ../.;
-    filter = path: type:
-      let base = builtins.baseNameOf path; in
-      !(builtins.elem base [ ".venv" "__pycache__" "dist" "build" ".pytest_cache" ]);
+    filter =
+      path: type:
+      let
+        base = builtins.baseNameOf path;
+      in
+      !(builtins.elem base [
+        ".venv"
+        "__pycache__"
+        "dist"
+        "build"
+        ".pytest_cache"
+      ]);
   };
 
-  dependencies = with python3.pkgs; [
+  build-system = [ python3Packages.hatchling ];
+
+  dependencies = with python3Packages; [
     textual
     rich
   ];
 
-  nativeBuildInputs = [
-    python3.pkgs.hatchling
-    makeWrapper
-  ];
+  nativeBuildInputs = [ makeWrapper ];
 
   postInstall = ''
-    install -Dm755 ${../src/vpntui/privileged/run-vpn} $out/libexec/vpntui/run-vpn
-    sed -i '1c #!${python3}/bin/python3' $out/libexec/vpntui/run-vpn
+    install -Dm755 $src/src/vpntui/privileged/run-vpn $out/libexec/vpntui/run-vpn
+    patchShebangs $out/libexec/vpntui/run-vpn
+
     wrapProgram $out/libexec/vpntui/run-vpn \
-      --prefix PATH : ${lib.makeBinPath [ iproute2 util-linux slirp4netns libnotify coreutils ]}
+      --prefix PATH : ${
+        lib.makeBinPath [
+          iproute2
+          util-linux
+          slirp4netns
+          libnotify
+          coreutils
+        ]
+      }
 
     wrapProgram $out/bin/vpntui \
-      --prefix PATH : ${lib.makeBinPath [ xray iproute2 util-linux slirp4netns curl libnotify ]}
+      --prefix PATH : ${
+        lib.makeBinPath [
+          xray
+          iproute2
+          util-linux
+          slirp4netns
+          curl
+          libnotify
+        ]
+      }
   '';
 
-  # Textual tests need a TTY; unit tests do not need network or root.
-  doCheck = false;
+  nativeCheckInputs = [ python3Packages.pytestCheckHook ];
 
-  meta = with lib; {
+  # The remaining tests need a TTY, root or a live Xray core.
+  enabledTestPaths = [
+    "tests/test_config.py"
+    "tests/test_subscription.py"
+  ];
+
+  meta = {
     description = "Per-application VPN control panel built on Xray";
     homepage = "https://github.com/dodry-question/vpntui";
-    license = licenses.mit;
+    license = lib.licenses.mit;
     maintainers = [ ];
-    platforms = platforms.linux;
+    platforms = lib.platforms.linux;
     mainProgram = "vpntui";
   };
-}
+})

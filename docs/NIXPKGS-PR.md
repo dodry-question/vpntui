@@ -17,13 +17,21 @@ helper refuses to execute user-owned binaries as root.
 
 ## Things done
 
-- [x] Built on Linux
-- [x] Tested the CLI and the headless TUI
-- [x] Ran `nixpkgs-review` (to be done before opening the PR)
-- [x] Added the NixOS module
-- [x] Checked that the package builds without network access
+- [x] Built on Linux (`python3Packages.buildPythonApplication`, tests enabled)
+- [x] Tested the CLI and the headless TUI manually; the packaged tests run
+      `tests/test_config.py` and `tests/test_subscription.py`
+- [x] Added the NixOS module and evaluated `programs.vpntui` with two users
+      (sudo rule, `VPNTUI_HELPER`, `environment.systemPackages`)
+- [x] Checked that the package builds without network access; Xray is only a
+      runtime dependency
+- [ ] `nixpkgs-review` — not run locally (no Nix on the development host); the
+      recipe was built against `nixos-unstable` in a container with the same
+      `fetchFromGitHub` hash
 
 ## Notes for reviewers
+
+Tests for the TUI itself need a TTY and are excluded via `enabledTestPaths`;
+the remaining suite has no network or root access.
 
 The sudo rule is intentionally limited to the single helper path. The helper
 creates a network namespace, starts `slirp4netns` and Xray, and always runs the

@@ -5,6 +5,8 @@
 - Nix: add the missing `hatchling` build input, so the flake package and the
   nixpkgs recipe build.
 - CI: build the Nix package in addition to evaluating the flake.
+- Nix: follow nixpkgs conventions (`build-system`, `patchShebangs`) and run the
+  self-contained test files during the package build.
 
 ## 1.0.0 — 2026-11-13
 

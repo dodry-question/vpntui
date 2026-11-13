@@ -63,6 +63,16 @@ nix-build -A vpntui
 nix-shell -p nixpkgs-review --run "nixpkgs-review pr <number>"
 ```
 
+The recipe runs the two self-contained test files (`test_config.py`,
+`test_subscription.py`); the TUI and system-integration tests need a TTY, root
+or a live Xray core and are skipped. The packaged helper is rewritten with
+`patchShebangs`, so it always runs the interpreter from the same package.
+
+The copy in `nix/pkgs-by-name/` keeps `maintainers = [ ]` so the flake builds
+against released nixpkgs; the submitted recipe additionally lists
+`lib.maintainers.dodry-question` and adds that entry to
+`maintainers/maintainer-list.nix` (name `dodry`, GitHub ID 208013669).
+
 The package must build without network access at build time; the Xray core is
 a runtime dependency (`xray` in `PATH`) and is never downloaded during the
 build. `vpntui core install` is only for non-Nix installations.
@@ -71,7 +81,9 @@ build. `vpntui core install` is only for non-Nix installations.
 
 ```bash
 git checkout -b vpntui
-git add pkgs/by-name/vp/vpntui/package.nix nixos/modules/programs/vpntui.nix
+git add pkgs/by-name/vp/vpntui/package.nix nixos/modules/programs/vpntui.nix \
+  nixos/modules/module-list.nix nixos/doc/manual/release-notes/rl-2611.section.md \
+  maintainers/maintainer-list.nix
 git commit -m 'vpntui: init at 1.0.1'
 gh pr create --repo NixOS/nixpkgs --title 'vpntui: init at 1.0.1' --body-file docs/NIXPKGS-PR.md
 ```
