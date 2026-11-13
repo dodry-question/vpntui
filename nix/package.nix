@@ -27,7 +27,10 @@ python3.pkgs.buildPythonApplication rec {
     rich
   ];
 
-  nativeBuildInputs = [ makeWrapper ];
+  nativeBuildInputs = [
+    python3.pkgs.hatchling
+    makeWrapper
+  ];
 
   postInstall = ''
     install -Dm755 ${../src/vpntui/privileged/run-vpn} $out/libexec/vpntui/run-vpn
