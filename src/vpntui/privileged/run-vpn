@@ -1,0 +1,456 @@
+#!/usr/bin/python3
+"""vpntui root-хелпер: запускает приложение в отдельном network namespace,
+весь трафик которого идёт через Xray (TUN + slirp4netns).
+
+Вызывается ТОЛЬКО через sudo (NOPASSWD) из пользовательского run-vpn.
+Запрос читает из stdin (JSON):
+  {"config": {...xray config...}, "tun": {...}, "server": {...},
+   "cmd": ["brave-browser-stable"], "cwd": "/home/user", "env": {...}}
+
+Приложение всегда запускается от имени вызывающего пользователя
+(SUDO_UID/SUDO_GID), root-права нужны только на создание namespace,
+TUN-интерфейса и маршрутов.
+"""
+import grp
+import json
+import os
+import pathlib
+import pwd
+import re
+import select
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+RUN_DIR = pathlib.Path("/run/vpntui")
+SESS_DIR = RUN_DIR / "sessions"
+MAX_ENV_LEN = 4096
+
+
+class SetupError(Exception):
+    pass
+
+
+def msg(text):
+    print(text, file=sys.stderr, flush=True)
+
+
+_EMOJI = None
+
+
+def clean(text):
+    """Срезаем эмодзи/флаги — в терминале/уведомлениях они дают «тофу»."""
+    global _EMOJI
+    if _EMOJI is None:
+        _EMOJI = re.compile(
+            "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002190-\U000021FF"
+            "\U0000FE00-\U0000FE0F\U0000200D\U000020E3\U00002B00-\U00002BFF]+"
+        )
+    return re.sub(r"\s+", " ", _EMOJI.sub(" ", text or "")).strip(" -—·|")
+
+
+def run(args, **kw):
+    r = subprocess.run(args, capture_output=True, text=True, **kw)
+    if r.returncode != 0:
+        raise SetupError(
+            f"команда {' '.join(args)} завершилась с кодом {r.returncode}\n"
+            f"{(r.stderr or r.stdout).strip()}"
+        )
+    return r
+
+
+def sanitize_env(raw, home, user, group):
+    """Пропускаем только «безопасные» переменные окружения."""
+    exact = {
+        "HOME", "USER", "LOGNAME", "SHELL", "PATH", "TERM", "COLORTERM",
+        "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR",
+        "XDG_SESSION_TYPE", "XDG_SESSION_DESKTOP", "XDG_CURRENT_DESKTOP",
+        "XDG_DATA_DIRS", "XDG_CONFIG_DIRS", "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+        "DBUS_SESSION_BUS_ADDRESS", "SWAYSOCK", "I3SOCK", "HYPRLAND_INSTANCE_SIGNATURE",
+        "PULSE_SERVER", "PULSE_COOKIE", "PIPEWIRE_REMOTE", "SSH_AUTH_SOCK",
+        "TMPDIR", "LANG", "LANGUAGE", "MOZ_ENABLE_WAYLAND",
+        "QT_QPA_PLATFORM", "GDK_BACKEND", "GTK_THEME", "ICON_THEME",
+        "BROWSER", "EDITOR", "VISUAL", "FLATPAK_BWRAP", "GTK_USE_PORTAL",
+    }
+    prefixes = ("LC_", "QT_", "GTK_", "GDK_")
+
+    env = {
+        "HOME": home,
+        "USER": user,
+        "LOGNAME": user,
+        "SHELL": "/bin/bash",
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+    }
+    for k, v in (raw or {}).items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            continue
+        if len(k) > 128 or len(v) > MAX_ENV_LEN or "\x00" in k + v:
+            continue
+        if k in exact or k.startswith(prefixes):
+            env[k] = v
+    # HOME/PATH/USER всегда наши
+    env["HOME"] = home
+    env["USER"] = user
+    env["LOGNAME"] = user
+    return env
+
+
+def start_slirp(ns, log):
+    """slirp4netns: userspace-шлюз наружу. Ждём сигнала готовности."""
+    r, w = os.pipe()
+    try:
+        p = subprocess.Popen(
+            ["slirp4netns", "--netns-type=path", f"/run/netns/{ns}",
+             "--configure", "--mtu=65520", "--disable-host-loopback",
+             "--ready-fd", str(w), "tap0"],
+            pass_fds=(w,), stdout=log, stderr=log, close_fds=True,
+        )
+    finally:
+        os.close(w)
+    ready, _, _ = select.select([r], [], [], 20)
+    os.close(r)
+    if not ready:
+        p.kill()
+        raise SetupError("slirp4netns не поднял сеть за 20 секунд")
+    return p
+
+
+def wait_link(ns, iface, timeout=15.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r = subprocess.run(["ip", "netns", "exec", ns, "ip", "-o", "link", "show", iface],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            return
+        time.sleep(0.1)
+    raise SetupError(f"интерфейс {iface} не появился")
+
+
+def ns_ip(ns, *args):
+    return run(["ip", "netns", "exec", ns, "ip", *args])
+
+
+def health_check(ns):
+    last = ""
+    for _ in range(3):
+        r = subprocess.run(
+            ["ip", "netns", "exec", ns, "curl", "-sS", "--connect-timeout", "8",
+             "-m", "15", "https://api.ipify.org"],
+            capture_output=True, text=True,
+        )
+        out = (r.stdout or "").strip()
+        if r.returncode == 0 and out.count(".") == 3 and len(out) < 20:
+            return out
+        last = (r.stderr or r.stdout or "").strip()
+        time.sleep(2)
+    raise SetupError("нет связи через VPN (проверь сервер/подписку): " + last)
+
+
+def _get(ns, url):
+    r = subprocess.run(
+        ["ip", "netns", "exec", ns, "curl", "-sS", "--connect-timeout", "6",
+         "-m", "10", url],
+        capture_output=True, text=True,
+    )
+    return (r.stdout or "").strip() if r.returncode == 0 else ""
+
+
+def detect_country(ns, ip):
+    """Страна выхода (по самому IP, запрос идёт через туннель)."""
+    cc = _get(ns, f"https://ipinfo.io/{ip}/country")
+    if re.fullmatch(r"[A-Z]{2}", cc):
+        return cc
+    js = _get(ns, f"https://api.country.is/{ip}")
+    try:
+        cc = json.loads(js).get("country") or ""
+        if re.fullmatch(r"[A-Z]{2}", cc):
+            return cc.upper()
+    except Exception:
+        pass
+    js = _get(ns, f"https://ipwho.is/{ip}")
+    try:
+        cc = json.loads(js).get("country_code") or ""
+        if re.fullmatch(r"[A-Z]{2}", cc):
+            return cc.upper()
+    except Exception:
+        pass
+    return ""
+
+
+def write_session(path, data):
+    """Пишем состояние сессии атомарно, чтобы TUI не читал полуфайл."""
+    try:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False))
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def cleanup_stale_sessions():
+    """Убираем записи сессий, чьи процессы/namespace уже умерли."""
+    try:
+        SESS_DIR.mkdir(mode=0o755, exist_ok=True)
+        for f in SESS_DIR.glob("*.json"):
+            try:
+                d = json.loads(f.read_text())
+            except Exception:
+                f.unlink(missing_ok=True)
+                continue
+            pid = d.get("app_pid")
+            ns = d.get("ns") or ""
+            alive = bool(pid) and os.path.exists(f"/proc/{pid}")
+            if ns and not pathlib.Path("/run/netns", ns).exists():
+                alive = False
+            if not alive:
+                f.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def notify_user(env, uid, gid, title, body):
+    exe = shutil.which("notify-send")
+    if not exe:
+        return
+    try:
+        subprocess.Popen(
+            ["setpriv", f"--reuid={uid}", f"--regid={gid}", "--init-groups",
+             "--", exe, "-a", "vpntui", "-i", "network-vpn", title, body],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+
+def main():
+    if os.geteuid() != 0:
+        msg("vpntui: нужен root (запускается через sudo)")
+        return 100
+
+    uid = int(os.environ.get("SUDO_UID") or 0)
+    gid = int(os.environ.get("SUDO_GID") or 0)
+    if uid == 0:
+        msg("vpntui: отказываюсь работать для root")
+        return 100
+
+    try:
+        req = json.loads(sys.stdin.read())
+        cmd = req["cmd"]
+        assert isinstance(cmd, list) and cmd and all(isinstance(c, str) and c for c in cmd)
+    except Exception as e:
+        msg(f"vpntui: некорректный запрос: {e}")
+        return 100
+
+    pw = pwd.getpwuid(uid)
+    user, home = pw.pw_name, pw.pw_dir
+    group = grp.getgrgid(gid).gr_name
+    xray = str(req.get("xray") or "")
+    if not xray or not os.path.isabs(xray) or not os.access(xray, os.X_OK):
+        msg("vpntui: не передан исполняемый xray")
+        return 100
+    st = os.stat(xray)
+    xray_as_user = st.st_uid != 0
+    if xray_as_user:
+        # A user-owned binary must never run as root: it would turn this
+        # NOPASSWD helper into a local privilege escalation.  Run it as the
+        # invoking user instead; TUN creation may then require a system core.
+        msg("vpntui: пользовательское ядро Xray запускается без root-прав")
+
+    cwd = req.get("cwd") or home
+    if not os.path.isdir(cwd):
+        cwd = home
+    env = sanitize_env(req.get("env") or {}, home, user, group)
+    tun = req["tun"]
+    server = req.get("server") or {}
+
+    RUN_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
+    work = RUN_DIR / f"run-{os.getpid()}-{int(time.time())}"
+    work.mkdir(mode=0o700)
+    ns = f"avpn{os.getpid()}"
+    cfg_path = work / "config.json"
+    cfg_path.write_text(json.dumps(req["config"], ensure_ascii=False))
+    cfg_path.chmod(0o600)
+
+    SESS_DIR.mkdir(mode=0o755, exist_ok=True)
+    cleanup_stale_sessions()
+    log_path = RUN_DIR / f"{ns}.log"
+    sess_path = SESS_DIR / f"{ns}.json"
+    sess = {
+        "ns": ns,
+        "app": clean(str(req.get("app") or cmd[0])),
+        "cmd": cmd,
+        "server": {k: server.get(k) for k in
+                   ("index", "name", "host", "port", "protocol", "ip")},
+        "started": int(time.time()),
+        "app_pid": None,
+        "exit_ip": None,
+        "country": None,
+        "uid": uid,
+        "user": user,
+        "log": str(log_path),
+        "state": "setup",
+    }
+    write_session(sess_path, sess)
+
+    resolv = work / "resolv.conf"
+    resolv.write_text("nameserver 1.1.1.1\nnameserver 8.8.8.8\n"
+                      "options timeout:2 attempts:2 edns0\n")
+    nsswitch = work / "nsswitch.conf"
+    nsswitch.write_text("hosts: files dns myhostname\n")
+
+    logf = open(log_path, "w")
+    try:
+        last = RUN_DIR / "last.log"
+        last.unlink(missing_ok=True)
+        last.symlink_to(log_path)
+    except Exception:
+        pass
+
+    xray_p = slirp_p = app_p = None
+    cleaned = False
+
+    def cleanup():
+        nonlocal cleaned
+        if cleaned:
+            return
+        cleaned = True
+        for p in (app_p, xray_p, slirp_p):
+            if p and p.poll() is None:
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+        deadline = time.time() + 5
+        for p in (app_p, xray_p, slirp_p):
+            if not p:
+                continue
+            try:
+                p.wait(timeout=max(0.1, deadline - time.time()))
+            except Exception:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+        subprocess.run(["ip", "netns", "del", ns], capture_output=True)
+        shutil.rmtree(work, ignore_errors=True)
+        try:
+            sess_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        logf.close()
+
+    def on_signal(signum, _frame):
+        cleanup()
+        sys.exit(128 + signum)
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+
+    try:
+        # --- namespace + внешняя сеть -------------------------------------
+        run(["ip", "netns", "add", ns])
+        run(["ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"])
+        run(["ip", "netns", "exec", ns, "sysctl", "-q", "-w",
+             "net.ipv6.conf.all.disable_ipv6=1",
+             "net.ipv6.conf.default.disable_ipv6=1"])
+        slirp_p = start_slirp(ns, logf)
+
+        # --- xray с TUN внутри namespace ----------------------------------
+        xray_cmd = ["ip", "netns", "exec", ns, xray, "run", "-c", str(cfg_path)]
+        if xray_as_user:
+            xray_cmd = ["ip", "netns", "exec", ns, "setpriv",
+                        f"--reuid={uid}", f"--regid={gid}", "--init-groups",
+                        "--inh-caps=-all", "--bounding-set=-all", "--", xray,
+                        "run", "-c", str(cfg_path)]
+        xray_p = subprocess.Popen(xray_cmd, stdout=logf, stderr=logf)
+        wait_link(ns, tun["name"])
+        if xray_p.poll() is not None:
+            raise SetupError("xray не смог стартовать")
+
+        ns_ip(ns, "link", "set", tun["name"], "up")
+        ns_ip(ns, "addr", "add", tun["addr"], "dev", tun["name"])
+
+        # Всё — в TUN (table 100), кроме трафика с нашим fwmark.
+        ns_ip(ns, "route", "add", "default", "dev", tun["name"], "table", str(tun["table"]))
+        ns_ip(ns, "rule", "add", "pref", "100", "fwmark",
+              hex(tun["mark"]), "lookup", "main")
+        ns_ip(ns, "rule", "add", "pref", "200", "lookup", str(tun["table"]))
+
+        # Bypass-маршруты к самому серверу (страховка от петли).
+        gw = tun.get("gateway")
+        for ip in server.get("ips") or []:
+            subprocess.run(["ip", "netns", "exec", ns, "ip", "route", "replace",
+                            f"{ip}/32", "via", gw, "dev", "tap0",
+                            "table", str(tun["table"])], capture_output=True)
+
+        if not req.get("no_check"):
+            exit_ip = health_check(ns)
+        else:
+            exit_ip = "?"
+
+        country = detect_country(ns, exit_ip) if exit_ip != "?" else ""
+        need = (req.get("require_country") or "").upper()
+        if country == "RU" and not req.get("allow_ru"):
+            raise SetupError(
+                f"выход через российский IP {exit_ip} (RU) — чат Roblox так не заработает.\n"
+                "Выбери зарубежный сервер: run-vpn -l, затем run-vpn -s N ..."
+            )
+        if need and country and country != need:
+            raise SetupError(
+                f"выход через {country}, а требуется {need} (IP {exit_ip}). "
+                "Смени сервер через -s."
+            )
+        cc = f" ({country})" if country else ""
+        sess.update(exit_ip=exit_ip, country=country, state="up")
+        write_session(sess_path, sess)
+        msg(f"vpntui: туннель поднят, внешний IP {exit_ip}{cc} "
+            f"(сервер {clean(str(server.get('name') or server.get('host') or '?'))})")
+        if req.get("notify"):
+            notify_user(env, uid, gid, "VPN: подключено",
+                        f"IP {exit_ip}{cc} — вот так видит тебя сеть")
+
+        # --- запуск приложения от имени пользователя ----------------------
+        script = (
+            "mount --make-rprivate /\n"
+            f"mount --bind {shlex.quote(str(resolv))} /etc/resolv.conf\n"
+            f"mount --bind {shlex.quote(str(nsswitch))} /etc/nsswitch.conf\n"
+            f"exec setpriv --reuid={uid} --regid={gid} --init-groups -- \"$@\"\n"
+        )
+        app_p = subprocess.Popen(
+            ["ip", "netns", "exec", ns, "unshare", "-m", "--propagation", "private",
+             "--", "bash", "-c", script, "vpntui", *cmd],
+            cwd=cwd, env=env,
+        )
+        sess.update(app_pid=app_p.pid, state="running")
+        write_session(sess_path, sess)
+        rc = app_p.wait()
+        return rc
+    except SetupError as e:
+        msg(f"vpntui: {e}")
+        try:
+            logf.flush()
+            tail = log_path.read_text(errors="replace").strip().splitlines()[-15:]
+        except Exception:
+            tail = []
+        if tail:
+            msg("--- лог " + str(log_path) + " ---")
+            msg("\n".join(tail))
+        return 100
+    except FileNotFoundError as e:
+        msg(f"vpntui: не найдена программа: {e}")
+        return 100
+    except Exception as e:
+        msg(f"vpntui: ошибка: {e}")
+        return 100
+    finally:
+        cleanup()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

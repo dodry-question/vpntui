@@ -1,0 +1,19 @@
+# Changelog
+
+## 1.0.0 — 2026-11-13
+
+First public release.
+
+- Per-application VPN through a network namespace and Xray TUN inbound.
+- Textual TUI with eight sections: Dashboard, Profiles, Proxies, Connections,
+  Rules, Logs, Settings, Applications.
+- Installed-application rules: always-VPN toggle, per-app server (`Auto` uses
+  the server selected on the Proxy page), desktop `Exec=` rewrite and restore.
+- Subscription import from URL/file/stdin: `vless`, `vmess`, `trojan`, `ss`,
+  `hysteria2`, base64 lists and Xray JSON; selected server survives re-import.
+- Xray core manager: system package first, official release download with
+  SHA-256 verification, optional root-owned system installation.
+- Global proxy/TUN mode as a systemd user service.
+- One-time migration of the old `~/.config/xray` / `~/scripts/vpn` layout;
+  existing Qoder desktop shortcut is preserved as-is.
+- Nix flake, NixOS module and a nixpkgs-ready package recipe.

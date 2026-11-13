@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=VPN (vpntui)
+GenericName=Per-app VPN
+Comment=Run selected applications through Xray, manage servers and rules
+Exec=vpntui
+Icon=network-vpn
+Terminal=true
+Categories=Network;System;
+Keywords=vpn;proxy;xray;vpntui;

@@ -1,0 +1,59 @@
+{
+ "default": "proxy",
+ "rules": [
+  {
+   "type": "DOMAIN-SUFFIX",
+   "value": "roblox.com",
+   "target": "proxy",
+   "note": "Roblox: игра, чат, API"
+  },
+  {
+   "type": "DOMAIN-SUFFIX",
+   "value": "rbxcdn.com",
+   "target": "proxy",
+   "note": "Roblox CDN: картинки, ассеты, аватары"
+  },
+  {
+   "type": "DOMAIN-SUFFIX",
+   "value": "rbxcdn.net",
+   "target": "proxy",
+   "note": "Roblox CDN (резервный домен)"
+  },
+  {
+   "type": "DOMAIN-SUFFIX",
+   "value": "robloxlabs.com",
+   "target": "proxy",
+   "note": "Roblox: капча и антибот"
+  },
+  {
+   "type": "DOMAIN-SUFFIX",
+   "value": "qoder.com",
+   "target": "proxy",
+   "note": "Qoder: сайт и вход"
+  },
+  {
+   "type": "DOMAIN-SUFFIX",
+   "value": "qoder.sh",
+   "target": "proxy",
+   "note": "Qoder: API и обновления"
+  },
+  {
+   "type": "DOMAIN-SUFFIX",
+   "value": "alicdn.com",
+   "target": "proxy",
+   "note": "Qoder: статика и загрузки"
+  },
+  {
+   "type": "DOMAIN-SUFFIX",
+   "value": "gosuslugi.ru",
+   "target": "direct",
+   "note": "пример: РФ-сервисы напрямую"
+  },
+  {
+   "type": "DOMAIN-KEYWORD",
+   "value": "sberbank",
+   "target": "direct",
+   "note": "пример: банк напрямую"
+  }
+ ]
+}

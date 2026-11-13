@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# never commit user data or subscription secrets
+candidates.json
+subscription.json
+state.json
+config.json
+settings.json
+apps.json
+subscription-source.json
+*.log
+*.desktop.bak*

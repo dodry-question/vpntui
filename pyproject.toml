@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vpntui"
+version = "1.0.0"
+description = "Per-application VPN control panel for Linux, built on Xray"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "dodry-question" }]
+keywords = ["vpn", "xray", "tui", "textual", "network-namespace", "proxy"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Networking",
+]
+dependencies = [
+  "textual>=0.80",
+  "rich>=13",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/dodry-question/vpntui"
+Issues = "https://github.com/dodry-question/vpntui/issues"
+
+[project.scripts]
+vpntui = "vpntui.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vpntui"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/vpntui/data/rules.default.json" = "vpntui/data/rules.default.json"
+"src/vpntui/data/browser-vpn.sh" = "vpntui/data/browser-vpn.sh"
+"src/vpntui/privileged/run-vpn" = "vpntui/privileged/run-vpn"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/README.md",
+  "/LICENSE",
+  "/packaging",
+  "/nix",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
