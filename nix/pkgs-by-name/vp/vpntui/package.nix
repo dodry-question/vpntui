@@ -20,7 +20,7 @@ python3.pkgs.buildPythonApplication rec {
     owner = "dodry-question";
     repo = "vpntui";
     tag = "v${version}";
-    hash = lib.fakeHash; # replace after the first `nix build`
+    hash = "sha256-WQxoJAomGysJvdVlpKZqAh+NCmU4DIb7YfOztwMBzkI=";
   };
 
   dependencies = with python3.pkgs; [

@@ -18,9 +18,19 @@ git push origin master --tags
 
 nixpkgs builds from a GitHub tag, not from the working tree.
 
-## 2. Fill the source hash
+## 2. Source hash
 
-In a nixpkgs checkout:
+The recipe pins the source hash for the `v1.0.0` tag:
+
+```
+hash = "sha256-WQxoJAomGysJvdVlpKZqAh+NCmU4DIb7YfOztwMBzkI=";
+```
+
+The tag must be pushed to GitHub first (`git push origin v1.0.0`); the hash was
+computed from the release tree with `nix hash path --sri` on a clean
+`git archive` export, which matches `fetchFromGitHub` after root stripping.
+
+When the tag or any tracked file changes, recompute it. In a nixpkgs checkout:
 
 ```bash
 nix build --impure --expr '
