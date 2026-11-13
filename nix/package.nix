@@ -12,7 +12,7 @@
 
 python3.pkgs.buildPythonApplication rec {
   pname = "vpntui";
-  version = "1.0.0";
+  version = "1.0.1";
   pyproject = true;
 
   src = lib.cleanSourceWith {

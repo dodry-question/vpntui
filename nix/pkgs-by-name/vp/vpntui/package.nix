@@ -13,14 +13,14 @@
 
 python3.pkgs.buildPythonApplication rec {
   pname = "vpntui";
-  version = "1.0.0";
+  version = "1.0.1";
   pyproject = true;
 
   src = fetchFromGitHub {
     owner = "dodry-question";
     repo = "vpntui";
     tag = "v${version}";
-    hash = "sha256-WQxoJAomGysJvdVlpKZqAh+NCmU4DIb7YfOztwMBzkI=";
+    hash = lib.fakeHash; # filled after the tag is published
   };
 
   dependencies = with python3.pkgs; [

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vpntui"
-version = "1.0.0"
+version = "1.0.1"
 description = "Per-application VPN control panel for Linux, built on Xray"
 readme = "README.md"
 license = { text = "MIT" }

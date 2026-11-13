@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 — 2026-11-13
+
+- Nix: add the missing `hatchling` build input, so the flake package and the
+  nixpkgs recipe build.
+- CI: build the Nix package in addition to evaluating the flake.
+
 ## 1.0.0 — 2026-11-13
 
 First public release.
