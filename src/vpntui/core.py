@@ -42,12 +42,15 @@ def find_xray() -> pathlib.Path | None:
         path = pathlib.Path(override).expanduser()
         if path.is_file() and os.access(path, os.X_OK):
             return path
-    current = paths.CORE_CURRENT / "xray"
-    if current.is_file() and os.access(current, os.X_OK):
-        return current
+    # A root-owned system core is preferred: the privileged helper cannot
+    # execute user-owned binaries as root (and running them as the user may
+    # prevent TUN creation).
     system = SYSTEM_CORE / "current" / "xray"
     if system.is_file() and os.access(system, os.X_OK):
         return system
+    current = paths.CORE_CURRENT / "xray"
+    if current.is_file() and os.access(current, os.X_OK):
+        return current
     found = shutil.which("xray")
     if found:
         return pathlib.Path(found)
@@ -127,7 +130,8 @@ def _safe_extract(archive: pathlib.Path, target: pathlib.Path) -> None:
                 destination.chmod(destination.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def install(version: str = "latest", assume_yes: bool = False) -> pathlib.Path:
+def install(version: str = "latest", assume_yes: bool = False,
+            activate: bool = True) -> pathlib.Path:
     release = _release(version)
     tag = str(release.get("tag_name") or version)
     asset = next((a for a in release.get("assets", []) if a.get("name") == asset_name()), None)
@@ -137,7 +141,8 @@ def install(version: str = "latest", assume_yes: bool = False) -> pathlib.Path:
     expected = expected.split(":", 1)[1] if expected.startswith("sha256:") else (expected or None)
     target = paths.CORE_DIR / tag
     if target.is_dir() and (target / "xray").is_file():
-        _activate(target)
+        if activate:
+            _activate(target)
         return target
     if not assume_yes:
         print(f"Будет установлен Xray {tag} ({asset_name()}, {asset.get('size', 0) // 1024 // 1024} МБ)")
@@ -159,7 +164,8 @@ def install(version: str = "latest", assume_yes: bool = False) -> pathlib.Path:
         if target.exists():
             shutil.rmtree(target)
         staging.rename(target)
-    _activate(target)
+    if activate:
+        _activate(target)
     print(f"Xray {tag} установлен: {target}")
     return target
 
@@ -171,7 +177,7 @@ def install_system(version: str = "latest", assume_yes: bool = False) -> pathlib
     core avoids that problem while keeping the normal XDG install untouched.
     """
     import subprocess
-    stage = install(version, assume_yes=assume_yes)
+    stage = install(version, assume_yes=assume_yes, activate=False)
     tag = stage.name
     target = SYSTEM_CORE / tag
     script = (

@@ -42,3 +42,18 @@ def test_entry_command_ignores_foreign_launcher(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: str(venv))
     monkeypatch.setattr(sys, "executable", str(venv.parent / "python"))
     assert paths.entry_command() == [str(venv)]
+
+
+def test_find_xray_prefers_root_owned_core(tmp_path, monkeypatch):
+    monkeypatch.delenv("VPNTUI_XRAY", raising=False)
+    system = tmp_path / "system" / "current" / "xray"
+    system.parent.mkdir(parents=True)
+    system.write_text("#!/bin/sh\n")
+    system.chmod(0o755)
+    user = tmp_path / "user" / "xray"
+    user.parent.mkdir(parents=True)
+    user.write_text("#!/bin/sh\n")
+    user.chmod(0o755)
+    monkeypatch.setattr(core, "SYSTEM_CORE", tmp_path / "system")
+    monkeypatch.setattr(core.paths, "CORE_CURRENT", tmp_path / "user")
+    assert core.find_xray() == system
