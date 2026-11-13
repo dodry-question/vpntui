@@ -92,6 +92,12 @@ The repository is public, which is required for `fetchFromGitHub`. CI runs
 `nixpkgs-review`; expect requests about the module's sudo rule and about
 running the helper only for listed users.
 
+## Submitted
+
+- PR: <https://github.com/NixOS/nixpkgs/pull/587475>
+- Branch: `vpntui-init` in the `dodry-question/nixpkgs` fork, single commit
+  `vpntui: init at 1.0.1` on top of `master`.
+
 ## Repository-local check
 
 On a machine with Nix:
