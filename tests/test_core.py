@@ -20,6 +20,7 @@ def test_find_xray_env(tmp_path, monkeypatch):
 
 def test_find_xray_none(tmp_path, monkeypatch):
     monkeypatch.delenv("VPNTUI_XRAY", raising=False)
+    monkeypatch.setattr(core, "SYSTEM_CORE", tmp_path / "system-core")
     monkeypatch.setattr(core.paths, "CORE_CURRENT", tmp_path / "core" / "current")
     monkeypatch.setattr(core.paths, "LEGACY_XRAY", tmp_path / "missing")
     monkeypatch.setattr(core.shutil, "which", lambda name: None)

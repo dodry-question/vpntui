@@ -80,21 +80,9 @@ def state_index():
 def server_name(cands, index):
     """Человекочитаемое имя: из subscription.json, иначе tag кандидата."""
     try:
-        subs = json.loads(SUBS.read_text())
-        names = []
-        seen = set()
-        for cfg in subs:
-            remark = (cfg.get("remarks") or "").strip()
-            for o in cfg.get("outbounds", []):
-                if o.get("protocol") in ("freedom", "block", "dns", "blackhole", None):
-                    continue
-                key = json.dumps(o.get("settings", {}), sort_keys=True) + \
-                    json.dumps(o.get("streamSettings", {}), sort_keys=True)
-                if key in seen:
-                    continue
-                seen.add(key)
-                names.append(remark)
-        if len(names) == len(cands):
+        from .subscription import names_for
+        names = names_for(cands)
+        if 0 <= index < len(names) and names[index]:
             return names[index]
     except Exception:
         pass

@@ -151,11 +151,15 @@ def install(version: str = "latest", assume_yes: bool = False,
         if answer not in ("", "y", "yes", "д", "да"):
             raise CoreError("установка отменена")
     target.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="vpntui-core-") as tmp:
-        archive = pathlib.Path(tmp) / asset_name()
+    # Extract next to the target, not in /tmp: /tmp is often a different
+    # filesystem (tmpfs), and renaming across devices fails with EXDEV.
+    staging = target.with_name(target.name + ".staging")
+    download_dir = pathlib.Path(tempfile.mkdtemp(prefix="vpntui-core-"))
+    try:
+        archive = download_dir / asset_name()
         print(f"Скачиваю {asset['browser_download_url']}")
         _download(str(asset["browser_download_url"]), archive, expected)
-        staging = pathlib.Path(tmp) / "staging"
+        shutil.rmtree(staging, ignore_errors=True)
         staging.mkdir()
         _safe_extract(archive, staging)
         if not (staging / "xray").is_file():
@@ -163,7 +167,10 @@ def install(version: str = "latest", assume_yes: bool = False,
         staging.chmod(0o755)
         if target.exists():
             shutil.rmtree(target)
-        staging.rename(target)
+        os.replace(staging, target)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(download_dir, ignore_errors=True)
     if activate:
         _activate(target)
     print(f"Xray {tag} установлен: {target}")

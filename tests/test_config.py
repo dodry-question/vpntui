@@ -49,3 +49,21 @@ def test_global_config(config, monkeypatch):
     assert [i["tag"] for i in data["inbounds"]] == ["socks", "http"]
     assert data["outbounds"][0]["tag"] == "proxy"
     assert json.loads((config / "state.json").read_text()) == {"mode": "proxy", "server_index": 0}
+
+
+def test_server_name_matches_by_content(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "SUBS", tmp_path / "subscription.json")
+    cands = [
+        {"protocol": "vless", "tag": "proxy-0", "settings": {"vnext": [{"address": "a"}]}},
+        {"protocol": "vless", "tag": "proxy-1", "settings": {"vnext": [{"address": "b"}]}},
+    ]
+    subs = [{"remarks": "A", "outbounds": [cands[0]]},
+            {"remarks": "B", "outbounds": [cands[1]]}]
+    (tmp_path / "subscription.json").write_text(json.dumps(subs))
+    assert appconfig.server_name(cands, 1) == "B"
+    # extra entries at the end do not shift names
+    (tmp_path / "subscription.json").write_text(json.dumps(subs + [subs[1]]))
+    assert appconfig.server_name(cands, 0) == "A"
+    # an unknown outbound falls back to the tag
+    (tmp_path / "subscription.json").write_text(json.dumps([subs[1]]))
+    assert appconfig.server_name(cands, 0) == "proxy-0"

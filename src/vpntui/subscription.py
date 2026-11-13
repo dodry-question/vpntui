@@ -437,13 +437,45 @@ def update() -> int:
     return apply(parse_text(fetch(url, meta.get("headers"))), url)
 
 
+PROXY_SKIP = ("freedom", "blackhole", "dns", "block")
+
+
+def _full_key(out: dict) -> tuple:
+    return (out.get("protocol"),
+            json.dumps(out.get("settings") or {}, sort_keys=True),
+            json.dumps(out.get("streamSettings") or {}, sort_keys=True))
+
+
+def names_for(candidates: list[dict]) -> list[str]:
+    """Best display name for each candidate.
+
+    Subscription files may group several servers under one remark or keep
+    extra entries, so names are matched by outbound content: a config with a
+    single proxy outbound wins, otherwise the grouped name with ``#n``.
+    """
+    names: dict[tuple, str] = {}
+    individual: set[tuple] = set()
+    for cfg in load_json(paths.SUBS, []) or []:
+        if not isinstance(cfg, dict):
+            continue
+        raw = str(cfg.get("remarks") or "").strip()
+        usable = [o for o in cfg.get("outbounds") or []
+                  if isinstance(o, dict) and o.get("protocol") not in PROXY_SKIP]
+        for n, out in enumerate(usable, 1):
+            ident = _full_key(out)
+            if len(usable) == 1 and ident not in individual:
+                names[ident] = raw or "Сервер"
+                individual.add(ident)
+            elif ident not in names:
+                names[ident] = f"{raw} #{n}" if raw else f"Сервер #{n}"
+    return [names.get(_full_key(candidate))
+            or str(candidate.get("remarks") or candidate.get("tag") or f"server-{i}")
+            for i, candidate in enumerate(candidates)]
+
+
 def summary() -> list[dict]:
     candidates = load_json(paths.CANDS, []) or []
-    configs = load_json(paths.SUBS, []) or []
-    names = []
-    for cfg in configs:
-        if isinstance(cfg, dict):
-            names.append(str(cfg.get("remarks") or ""))
+    names = names_for(candidates)
     out = []
     for i, candidate in enumerate(candidates):
         settings = candidate.get("settings") or {}
@@ -451,7 +483,7 @@ def summary() -> list[dict]:
         server = (settings.get("servers") or [{}])[0]
         host = vnext.get("address") or settings.get("address") or server.get("address") or "?"
         port = vnext.get("port") or settings.get("port") or server.get("port") or "?"
-        out.append({"index": i, "name": names[i] if i < len(names) else f"server-{i}",
+        out.append({"index": i, "name": names[i],
                     "host": host, "port": port, "protocol": candidate.get("protocol")})
     return out
 
