@@ -14,14 +14,14 @@
 
 python3Packages.buildPythonApplication (finalAttrs: {
   pname = "vpntui";
-  version = "1.0.1";
+  version = "1.0.2";
   pyproject = true;
 
   src = fetchFromGitHub {
     owner = "dodry-question";
     repo = "vpntui";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-PJPCHngyTeu8xZYWuzZ5yppGhPAwhi/2KjtTaiA5pcY=";
+    hash = "sha256-kbPkekkzqCMNO+rDI0uCGwxfET5L9HbhB6h6jcdKBfI=";
   };
 
   build-system = [ python3Packages.hatchling ];
@@ -67,6 +67,7 @@ python3Packages.buildPythonApplication (finalAttrs: {
   enabledTestPaths = [
     "tests/test_config.py"
     "tests/test_subscription.py"
+    "tests/test_conflicts.py"
   ];
 
   meta = {

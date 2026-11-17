@@ -34,7 +34,7 @@ The packaging (recipe, module, release note) was prepared with an LLM-based
 tool: OpenCode (DeepSeek V4.1 Flash Free). I reviewed every change and built
 and tested it before submitting:
 
-- `nix build github:dodry-question/vpntui/v1.0.1#default` in a clean container;
+- `nix build github:dodry-question/vpntui/v1.0.2#default` in a clean container;
 - the recipe in this PR built against `nixos-unstable`;
 - `programs.vpntui` evaluated with two users (sudo rule, `VPNTUI_HELPER`,
   `environment.systemPackages`).
