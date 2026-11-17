@@ -12,6 +12,7 @@
 TUN-интерфейса и маршрутов.
 """
 import grp
+import ipaddress
 import json
 import os
 import pathlib
@@ -28,6 +29,26 @@ import time
 RUN_DIR = pathlib.Path("/run/vpntui")
 SESS_DIR = RUN_DIR / "sessions"
 MAX_ENV_LEN = 4096
+
+# Global (whole-host) TUN mode.  The service must run as root: creating a TUN
+# device and replacing the default route needs CAP_NET_ADMIN.
+SYSTEM_CORE = pathlib.Path("/usr/local/lib/vpntui/core/current/xray")
+GLOBAL_DIR = pathlib.Path("/etc/vpntui")
+GLOBAL_CONFIG = GLOBAL_DIR / "xray-global.json"
+GLOBAL_UNIT = pathlib.Path("/etc/systemd/system/vpntui-xray.service")
+GLOBAL_SERVICE = "vpntui-xray.service"
+GLOBAL_WATCHDOG = "vpntui-xray-watchdog"
+MAX_CONFIG_LEN = 1_000_000
+
+TUN_ADDR = "198.18.0.1/30"
+TUN_ROUTES = ["0.0.0.0/0"]
+INBOUND_TAGS = {"tun-in", "socks", "http"}
+OUTBOUND_TAGS = {"proxy", "direct"}
+PROXY_PROTOCOLS = {"vless", "vmess", "trojan", "shadowsocks", "hysteria2"}
+LOG_LEVELS = {"debug", "info", "warning", "error", "none"}
+DNS_STRATEGIES = {"UseIP", "UseIPv4", "UseIPv6"}
+ROUTE_STRATEGIES = {"AsIs", "IPIfNonMatch", "IPOnDemand"}
+FREEDOM_STRATEGIES = {"AsIs", "UseIP", "UseIPv4", "UseIPv6"}
 
 
 class SetupError(Exception):
@@ -228,6 +249,516 @@ def notify_user(env, uid, gid, title, body):
         pass
 
 
+# ---------------------------------------------------------------- global mode
+
+def _root_owned(path):
+    try:
+        return os.stat(path).st_uid == 0
+    except OSError:
+        return False
+
+
+def global_core():
+    """Only a root-owned Xray may be started as root."""
+    candidates = [SYSTEM_CORE, shutil.which("xray")]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = str(pathlib.Path(candidate).resolve())
+        if os.access(path, os.X_OK) and _root_owned(path):
+            return path
+    raise SetupError(
+        "нет root-овского Xray: установи его командой `vpntui core install --system`"
+    )
+
+
+def _str_list(value, limit=64, length=300):
+    return (
+        isinstance(value, list)
+        and len(value) <= limit
+        and all(isinstance(item, str) and 0 < len(item) <= length for item in value)
+    )
+
+
+def _ip_list(value):
+    if not _str_list(value, limit=32):
+        return False
+    try:
+        for item in value:
+            ipaddress.ip_address(item)
+    except ValueError:
+        return False
+    return True
+
+
+def _cidr_list(value, allowed):
+    if not _str_list(value, limit=8):
+        return False
+    return all(item in allowed for item in value)
+
+
+def validate_global_config(cfg):
+    """Reject anything a root Xray should not do.
+
+    The config comes from the unprivileged TUI, so it is a security boundary:
+    only loopback/tun inbounds, known outbound protocols, no file logging and
+    no API/stats/policy sections are accepted.
+    """
+    def expect(cond, text):
+        if not cond:
+            raise SetupError(f"недопустимый конфиг: {text}")
+
+    expect(isinstance(cfg, dict), "ожидался объект")
+    expect(set(cfg) <= {"log", "dns", "inbounds", "outbounds", "routing"},
+           f"лишние разделы: {sorted(set(cfg) - {'log', 'dns', 'inbounds', 'outbounds', 'routing'})}")
+
+    log = cfg.get("log", {})
+    expect(isinstance(log, dict) and set(log) <= {"loglevel"}, "log")
+    expect(log.get("loglevel", "warning") in LOG_LEVELS, "log.loglevel")
+
+    if "dns" in cfg:
+        dns = cfg["dns"]
+        expect(isinstance(dns, dict) and set(dns) <= {"servers", "queryStrategy"}, "dns")
+        expect(_ip_list(dns.get("servers", [])), "dns.servers")
+        expect(dns.get("queryStrategy", "UseIPv4") in DNS_STRATEGIES, "dns.queryStrategy")
+
+    inbounds = cfg.get("inbounds")
+    expect(isinstance(inbounds, list) and 0 < len(inbounds) <= 4, "inbounds")
+    seen_tags = set()
+    for inbound in inbounds:
+        expect(isinstance(inbound, dict), "inbound")
+        expect(set(inbound) <= {"tag", "protocol", "listen", "port", "settings"},
+               f"inbound keys: {sorted(set(inbound))}")
+        tag, proto = inbound.get("tag"), inbound.get("protocol")
+        expect(tag in INBOUND_TAGS, f"inbound tag {tag!r}")
+        expect(proto == "tun" or proto in {"socks", "http"}, f"inbound protocol {proto!r}")
+        expect(tag not in seen_tags, f"повторный tag {tag!r}")
+        seen_tags.add(tag)
+        settings = inbound.get("settings", {})
+        expect(isinstance(settings, dict), "inbound settings")
+        if proto == "tun":
+            expect(set(settings) <= {"name", "address", "mtu", "stack", "strictRoute",
+                                     "sniff", "autoSystemRoutingTable"}, "tun settings")
+            expect(re.fullmatch(r"[a-z0-9_]{1,15}", str(settings.get("name", ""))), "tun.name")
+            expect(settings.get("address") == [TUN_ADDR], f"tun.address должно быть {TUN_ADDR}")
+            expect(isinstance(settings.get("mtu", 1500), int)
+                   and 1280 <= settings.get("mtu", 1500) <= 9000, "tun.mtu")
+            expect(settings.get("stack", "system") in {"system", "gvisor"}, "tun.stack")
+            expect(settings.get("strictRoute", False) is True, "tun.strictRoute")
+            expect(_cidr_list(settings.get("autoSystemRoutingTable", TUN_ROUTES), TUN_ROUTES),
+                   "tun.autoSystemRoutingTable")
+            sniff = settings.get("sniff", {})
+            expect(isinstance(sniff, dict) and set(sniff) <= {"enabled", "destOverride"},
+                   "tun.sniff")
+            expect(sniff.get("enabled", True) is True, "tun.sniff.enabled")
+            expect(set(sniff.get("destOverride", ["http", "tls"])) <= {"http", "tls", "quic"},
+                   "tun.sniff.destOverride")
+        else:
+            expect(inbound.get("listen") == "127.0.0.1", f"{tag}: только loopback")
+            port = inbound.get("port")
+            expect(isinstance(port, int) and 1024 <= port <= 65535, f"{tag}: порт")
+            allowed = {"udp"} if proto == "socks" else {"timeout"}
+            expect(set(settings) <= allowed, f"{tag}: settings")
+
+    outbounds = cfg.get("outbounds")
+    expect(isinstance(outbounds, list) and 0 < len(outbounds) <= 4, "outbounds")
+    tags = set()
+    for outbound in outbounds:
+        expect(isinstance(outbound, dict), "outbound")
+        expect(set(outbound) <= {"tag", "protocol", "settings", "streamSettings",
+                                 "sockopt", "sendThrough", "proxySettings"},
+               f"outbound keys: {sorted(set(outbound))}")
+        tag, proto = outbound.get("tag"), outbound.get("protocol")
+        expect(tag in OUTBOUND_TAGS, f"outbound tag {tag!r}")
+        expect(tag not in tags, f"повторный outbound tag {tag!r}")
+        tags.add(tag)
+        expect(proto in PROXY_PROTOCOLS or proto == "freedom", f"outbound protocol {proto!r}")
+        settings = outbound.get("settings", {})
+        expect(isinstance(settings, dict), "outbound settings")
+        if proto == "freedom":
+            expect(set(settings) <= {"domainStrategy"}, "freedom settings")
+            expect(settings.get("domainStrategy", "AsIs") in FREEDOM_STRATEGIES,
+                   "freedom.domainStrategy")
+        sockopt = outbound.get("sockopt", {})
+        expect(isinstance(sockopt, dict) and set(sockopt) <= {"mark", "domainStrategy"},
+               "outbound sockopt")
+        expect(isinstance(sockopt.get("mark", 0), int), "sockopt.mark")
+        expect(isinstance(outbound.get("streamSettings", {}), dict), "streamSettings")
+    expect("proxy" in tags, "нет outbound с tag proxy")
+
+    routing = cfg.get("routing", {})
+    expect(isinstance(routing, dict) and set(routing) <= {"domainStrategy", "rules"}, "routing")
+    expect(routing.get("domainStrategy", "AsIs") in ROUTE_STRATEGIES, "routing.domainStrategy")
+    rules = routing.get("rules", [])
+    expect(isinstance(rules, list) and len(rules) <= 64, "routing.rules")
+    for rule in rules:
+        expect(isinstance(rule, dict), "rule")
+        expect(set(rule) <= {"type", "ip", "domain", "protocol", "network",
+                             "outboundTag", "inboundTag"}, f"rule keys: {sorted(set(rule))}")
+        expect(rule.get("type") == "field", "rule.type")
+        expect(rule.get("outboundTag") in OUTBOUND_TAGS, "rule.outboundTag")
+        for key in ("ip", "domain", "protocol"):
+            if key in rule:
+                expect(_str_list(rule[key]), f"rule.{key}")
+        if "network" in rule:
+            expect(rule["network"] in {"tcp", "udp", "tcp,udp", "udp,tcp"}, "rule.network")
+        if "inboundTag" in rule:
+            expect(set(rule["inboundTag"]) <= INBOUND_TAGS, "rule.inboundTag")
+
+
+def _systemctl(*args, check=False):
+    result = subprocess.run(["systemctl", *args], capture_output=True, text=True)
+    if check and result.returncode != 0:
+        raise SetupError(
+            f"systemctl {' '.join(args)}: {(result.stderr or result.stdout).strip()}"
+        )
+    return result
+
+
+def _service_active():
+    return _systemctl("is-active", GLOBAL_SERVICE).stdout.strip() == "active"
+
+
+# --------------------------------------------------------- zapret exclusion
+
+ZAPRET_DROPIN = pathlib.Path("/etc/systemd/system/zapret.service.d/50-vpntui-exclude.conf")
+ZAPRET_SCRIPT_DIRS = (pathlib.Path("/usr/local/lib/vpntui"), pathlib.Path("/run/vpntui"))
+ZAPRET_UNIT_DIRS = ("/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")
+TUN_NAME = "vpntui0"
+
+ZAPRET_SCRIPT_TEXT = """#!/bin/sh
+# vpntui: keep zapret's DPI desync away from the tunnel device.
+# zapret rewrites the TLS ClientHello of outbound packets, which breaks every
+# site in its hostlists when the packet is already inside the vpntui tunnel.
+# Idempotent and safe to run repeatedly (systemd ExecStartPost and the vpntui
+# helper both call it).
+set -u
+TUN="${1:-vpntui0}"
+TABLES=$(nft list tables 2>/dev/null | sed -n 's/^table inet \\([^ ]*zapret[^ ]*\\).*/\\1/p')
+[ -n "$TABLES" ] || TABLES=zapret
+for T in $TABLES; do
+    CHAINS=$(nft list table inet "$T" 2>/dev/null \\
+        | sed -n 's/^[[:space:]]*chain \\([^ ]*\\) .*/\\1/p')
+    for ch in $CHAINS; do
+        BODY=$(nft list chain inet "$T" "$ch" 2>/dev/null) || continue
+        insert=0
+        case "$ch" in postrouting*) insert=1 ;; esac
+        case "$BODY" in *"hook postrouting"*) insert=1 ;; esac
+        [ "$insert" = 1 ] || continue
+        printf '%s' "$BODY" | grep -q "oifname \\"$TUN\\"" && continue
+        nft insert rule inet "$T" "$ch" oifname "$TUN" return 2>/dev/null || true
+    done
+done
+# iptables-based zapret (older installations).
+if command -v iptables >/dev/null 2>&1; then
+    if iptables -t mangle -S 2>/dev/null | grep -q NFQUEUE; then
+        iptables -t mangle -C POSTROUTING -o "$TUN" -j RETURN 2>/dev/null \\
+            || iptables -t mangle -I POSTROUTING 1 -o "$TUN" -j RETURN 2>/dev/null \\
+            || true
+    fi
+fi
+exit 0
+"""
+
+ZAPRET_DROPIN_TEXT = """[Service]
+# vpntui: after zapret recreates its rules, keep the tunnel out of them.
+# Managed by vpntui; removed by `vpntui uninstall`.
+# The leading "-" keeps zapret starting even if the helper is not there yet
+# (NixOS keeps it in /run, which is empty right after boot).
+ExecStartPost=-{script}
+"""
+
+
+def _script_dir():
+    """First writable directory for the zapret helper.
+
+    ``/usr/local/lib/vpntui`` on a normal distribution, ``/run/vpntui`` on
+    NixOS where ``/usr/local`` is not managed and may be read-only.
+    """
+    for base in ZAPRET_SCRIPT_DIRS:
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            probe = base / ".vpntui-write-test"
+            probe.write_text("")
+            probe.unlink()
+            return base
+        except OSError:
+            continue
+    return None
+
+
+def _write_if_changed(path, text, mode=None):
+    try:
+        if path.is_file() and path.read_text() == text:
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        if mode is not None:
+            path.chmod(mode)
+        return True
+    except OSError:
+        return False
+
+
+def _zapret_units():
+    return [pathlib.Path(d) / "zapret.service" for d in ZAPRET_UNIT_DIRS]
+
+
+def _zapret_tables():
+    """Names of nft tables that look like zapret (needs root)."""
+    tables = []
+    if shutil.which("nft"):
+        result = subprocess.run(["nft", "list", "tables"],
+                                capture_output=True, text=True)
+        for line in (result.stdout or "").splitlines():
+            match = re.match(r"^table\s+inet\s+(\S+)", line.strip())
+            if match and "zapret" in match.group(1):
+                tables.append(match.group(1))
+    if tables:
+        return tables
+    if any(unit.is_file() for unit in _zapret_units()):
+        return ["zapret"]
+    return []
+
+
+def ensure_zapret_exclusion(tun=TUN_NAME):
+    """Exclude the vpntui TUN from zapret's desync, persistently.
+
+    Installs the helper script and a systemd drop-in so the exclusion comes
+    back after ``systemctl restart zapret`` and after reboot, then applies it
+    to the live nftables/iptables rules.  Returns True when zapret is present.
+    """
+    if not _zapret_tables():
+        return False
+    base = _script_dir()
+    if base is None:
+        return False
+    script = base / "zapret-exclude-tun"
+    changed = _write_if_changed(script, ZAPRET_SCRIPT_TEXT, 0o755)
+    changed = _write_if_changed(
+        ZAPRET_DROPIN,
+        ZAPRET_DROPIN_TEXT.format(script=script), 0o644) or changed
+    if changed:
+        _systemctl("daemon-reload")
+    subprocess.run([str(script), tun], capture_output=True, text=True)
+    return True
+
+
+# ------------------------------------------------------- tunnel verification
+
+def _curl_code(url, timeout=6):
+    curl = shutil.which("curl")
+    if not curl:
+        return ""
+    result = subprocess.run(
+        [curl, "-s", "-m", str(timeout), "-o", "/dev/null", "-w", "%{http_code}", url],
+        capture_output=True, text=True,
+    )
+    return (result.stdout or "").strip()
+
+
+def _curl_body(url, timeout=6):
+    curl = shutil.which("curl")
+    if not curl:
+        return ""
+    result = subprocess.run([curl, "-s", "-m", str(timeout), url],
+                            capture_output=True, text=True)
+    return (result.stdout or "").strip()
+
+
+def _default_devices():
+    result = subprocess.run(["ip", "route", "show", "default"],
+                            capture_output=True, text=True)
+    devices = []
+    for line in (result.stdout or "").splitlines():
+        match = re.search(r"\bdev\s+(\S+)", line)
+        if match:
+            devices.append(match.group(1))
+    return devices
+
+
+def verify_tunnel(tun=TUN_NAME, attempts=3):
+    """Prove that traffic really leaves through the tunnel.
+
+    A running service is not enough: a foreign default route, a port clash or
+    a dead upstream still leave the interface "active" while every packet
+    goes nowhere.  Returns a dict; raises SetupError when the tunnel is dead.
+    """
+    for _ in range(10):
+        if pathlib.Path(f"/sys/class/net/{tun}").exists():
+            break
+        time.sleep(0.3)
+    if not pathlib.Path(f"/sys/class/net/{tun}").exists():
+        raise SetupError(f"интерфейс {tun} не появился")
+
+    devices = _default_devices()
+    if tun not in devices:
+        raise SetupError(
+            "сервис запущен, но default-маршрут не смотрит в туннель "
+            f"(default: {', '.join(devices) or 'нет'}). "
+            "Обычно это WARP или другой VPN, который перехватил маршруты."
+        )
+
+    codes = []
+    for attempt in range(max(1, attempts)):
+        code = _curl_code("https://api.ipify.org")
+        codes.append(code or "000")
+        if code == "200":
+            return {"verified": True, "exit_ip": _curl_body("https://api.ipify.org"),
+                    "probes": codes, "default": devices}
+        if attempt + 1 < attempts:
+            time.sleep(2)
+    raise SetupError(
+        "туннель поднялся, но трафик через него не проходит "
+        f"(проверки: {', '.join(codes)}). Сервис остановлен, интернет должен "
+        "вернуться. Проверь сервер, DNS и конфликты: vpntui doctor"
+    )
+
+
+
+def _cancel_watchdog():
+    _systemctl("stop", f"{GLOBAL_WATCHDOG}.timer")
+    _systemctl("reset-failed", f"{GLOBAL_WATCHDOG}.timer")
+
+
+def _write_unit(core):
+    unit = (
+        "[Unit]\n"
+        "Description=vpntui global Xray (TUN)\n"
+        "Documentation=https://github.com/dodry-question/vpntui\n"
+        "After=network-online.target\n"
+        "Wants=network-online.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"ExecStart={core} run -c {GLOBAL_CONFIG}\n"
+        "Restart=on-failure\n"
+        "RestartSec=3\n"
+        "NoNewPrivileges=true\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
+    GLOBAL_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if not GLOBAL_UNIT.is_file() or GLOBAL_UNIT.read_text() != unit:
+        GLOBAL_UNIT.write_text(unit)
+        GLOBAL_UNIT.chmod(0o644)
+        _systemctl("daemon-reload", check=True)
+
+
+def global_start(watchdog=0, verify=True):
+    raw = sys.stdin.read(MAX_CONFIG_LEN + 1)
+    if len(raw) > MAX_CONFIG_LEN:
+        raise SetupError("конфиг слишком большой")
+    try:
+        cfg = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SetupError(f"конфиг не JSON: {exc}") from exc
+    validate_global_config(cfg)
+    core = global_core()
+    GLOBAL_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
+    GLOBAL_CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=1))
+    GLOBAL_CONFIG.chmod(0o644)
+    _write_unit(core)
+    _cancel_watchdog()
+    # Автозапуск не включаем: глобальным режимом управляет кнопка в TUI.
+    # Если нужен старт при загрузке — пользователь включает его сам (systemctl enable).
+    _systemctl("disable", GLOBAL_SERVICE)
+    # Исключение для zapret ставим до старта: правила zapret уже живут в ядре.
+    zapret = ensure_zapret_exclusion(TUN_NAME)
+    _systemctl("restart", GLOBAL_SERVICE)
+    time.sleep(0.7)
+    if not _service_active():
+        log = _systemctl("status", GLOBAL_SERVICE, "--no-pager", "-n", "8")
+        _systemctl("stop", GLOBAL_SERVICE)
+        raise SetupError(
+            "сервис не запустился:\n" + (log.stdout + log.stderr).strip()
+        )
+    if watchdog > 0:
+        tool = shutil.which("systemd-run")
+        if not tool:
+            raise SetupError("systemd-run не найден, watchdog невозможен")
+        subprocess.run(
+            [tool, "--collect", "--unit", GLOBAL_WATCHDOG,
+             f"--on-active={int(watchdog)}",
+             shutil.which("systemctl") or "/usr/bin/systemctl",
+             "stop", GLOBAL_SERVICE],
+            capture_output=True, text=True, check=False,
+        )
+    # Интерфейс уже существует — повторяем (идемпотентно), чтобы правило
+    # гарантированно стояло до первой проверки трафика.
+    zapret = ensure_zapret_exclusion(TUN_NAME) or zapret
+    has_tun = any(inbound.get("protocol") == "tun"
+                  for inbound in cfg.get("inbounds") or [])
+    result = {"service": GLOBAL_SERVICE, "zapret_excluded": bool(zapret)}
+    if verify and has_tun:
+        try:
+            result.update(verify_tunnel(TUN_NAME))
+        except SetupError:
+            _cancel_watchdog()
+            _systemctl("stop", GLOBAL_SERVICE)
+            _systemctl("reset-failed", GLOBAL_SERVICE)
+            raise
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+def global_repair():
+    """Apply every conflict fix that needs root, without starting the tunnel."""
+    zapret = ensure_zapret_exclusion(TUN_NAME)
+    print(json.dumps({"zapret_excluded": bool(zapret)}, ensure_ascii=False))
+    return 0
+
+
+def global_stop():
+    _cancel_watchdog()
+    _systemctl("stop", GLOBAL_SERVICE)
+    time.sleep(0.3)
+    if _service_active():
+        raise SetupError("не удалось остановить сервис")
+    return 0
+
+
+def global_status():
+    active = _service_active()
+    print(json.dumps({
+        "service": GLOBAL_SERVICE,
+        "active": active,
+        "config": str(GLOBAL_CONFIG),
+        "core": str(SYSTEM_CORE) if SYSTEM_CORE.exists() else "",
+    }, ensure_ascii=False))
+    return 0 if active else 1
+
+
+def global_main(argv):
+    action = argv[0] if argv else "status"
+    watchdog = 0
+    verify = "--no-verify" not in argv
+    if "--watchdog" in argv:
+        try:
+            watchdog = int(argv[argv.index("--watchdog") + 1])
+        except (IndexError, ValueError):
+            return 100
+    try:
+        if action == "start":
+            return global_start(watchdog, verify=verify)
+        if action == "stop":
+            return global_stop()
+        if action == "status":
+            return global_status()
+        if action == "repair":
+            return global_repair()
+        if action == "restart":
+            _systemctl("restart", GLOBAL_SERVICE)
+            return 0 if _service_active() else 100
+    except SetupError as exc:
+        msg(f"vpntui: {exc}")
+        return 100
+    msg(f"vpntui: неизвестное действие global: {action}")
+    return 100
+
+
+
 def main():
     if os.geteuid() != 0:
         msg("vpntui: нужен root (запускается через sudo)")
@@ -238,6 +769,9 @@ def main():
     if uid == 0:
         msg("vpntui: отказываюсь работать для root")
         return 100
+
+    if sys.argv[1:2] == ["global"]:
+        return global_main(sys.argv[2:])
 
     try:
         req = json.loads(sys.stdin.read())

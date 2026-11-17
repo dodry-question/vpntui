@@ -22,14 +22,22 @@ VPN network:     Roblox/Qoder ── netns ──► Xray ──► subscription
   rewrites the application's `Exec=` line and restores it when disabled.
   System-wide entries in `/usr/share/applications` are never modified: a
   per-user copy is created in `~/.local/share/applications` instead.
+* **Any command in the list** — press `a` on the Applications page (or
+  `vpntui apps add --cmd …`) to add a program that has no `.desktop` file;
+  vpntui creates a launcher for it. A marked application gets its own tunnel
+  and works even when the global VPN is off.
 * **Subscriptions** — import a URL or file with `vless://`, `vmess://`,
   `trojan://`, `ss://`, `hysteria2://` links, a base64 list, or raw Xray JSON.
   The selected server survives re-import when it still exists.
 * **Server picker** — TCP reachability/latency, search, failover-friendly list.
 * **Domain rules** — Clash-style `DOMAIN`, `DOMAIN-SUFFIX` and
   `DOMAIN-KEYWORD` rules with `proxy`, `direct` or `srv:N` targets.
-* **Global mode** — system SOCKS/HTTP proxy (10808/10809) or a TUN interface,
-  managed as a systemd user service.
+* **Global mode** — system SOCKS/HTTP proxy or a TUN interface, managed as a
+  systemd service. Ports move automatically when another proxy already holds
+  `10808`/`10809`.
+* **Conflict-aware** — detects WARP, zapret, Tailscale exit nodes, extra TUNs
+  and busy proxy ports before start; fixes what is safe and refuses to leave a
+  half-broken tunnel behind (see below).
 * **Xray core manager** — uses a system `xray` when available; otherwise
   `vpntui core install` downloads an official release and verifies SHA-256
   before installing into the XDG data directory.
@@ -60,6 +68,35 @@ Arch:
 
 ```bash
 sudo pacman -S iproute2 util-linux slirp4netns curl libnotify
+```
+
+## Compatibility and conflicts
+
+vpntui takes over the default route only while the TUN is running, and gives
+it back on stop. Several popular tools do the same thing in their own way, so
+vpntui checks for them **before** every start and either fixes the conflict or
+refuses to start with an explanation instead of leaving you offline.
+
+| Tool | What it does | What vpntui does |
+|---|---|---|
+| **zapret** (`nfqws`/`tpws`) | rewrites the TLS ClientHello of every outbound 443 packet, including packets already inside the tunnel — sites on its hostlists (`youtube.com`, `x.com`, `discord.com`, …) die with a TLS EOF | inserts `oifname "vpntui0" return` into the zapret nftables/iptables chains and drops in `zapret.service.d/50-vpntui-exclude.conf`, so the exclusion survives `systemctl restart zapret` and reboot |
+| **Cloudflare WARP** | keeps an `ip rule` policy route for the whole host and wins over the `main` table | disconnects WARP before the TUN comes up (with a notification). WARP itself is never enabled or added to autostart |
+| **Tailscale** | an exit node takes over the default route | detected as a blocker; vpntui tells you to clear the exit node. A plain Tailscale (no exit node) is fine |
+| **Clash/Mihomo**, **sing-box**, another Xray | may own the local proxy ports | ports are checked; if `10808`/`10809` are busy, vpntui moves its SOCKS/HTTP ports and remembers them |
+| **Telegram WS proxy** (`TgWsProxy`) | a normal outbound client | compatible: its traffic simply goes through the tunnel |
+| another TUN (`wg0`, `tun0`, `openvpn`) | a second default route | reported as a conflict |
+
+After the service reports `active`, vpntui **proves** that traffic leaves
+through the tunnel (default route + `api.ipify.org` probe). If the probe
+fails, the service is stopped automatically and your connection comes back —
+"connected but nothing works" never sticks.
+
+Diagnose or fix everything by hand:
+
+```bash
+vpntui doctor          # install state + compatibility report
+vpntui doctor --fix    # apply the safe fixes (zapret exclusion)
+vpntui repair          # same, for scripts
 ```
 
 ## Install

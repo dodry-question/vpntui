@@ -6,6 +6,7 @@ import os
 import pathlib
 import re
 import shutil
+import socket
 import subprocess
 
 EMOJI = re.compile(
@@ -54,3 +55,20 @@ def which(*names: str) -> str | None:
         if found:
             return found
     return None
+
+
+def port_free(port: int, host: str = "127.0.0.1") -> bool:
+    """True when nothing listens on ``host:port``.  No root required.
+
+    ``SO_REUSEADDR`` keeps a socket in ``TIME_WAIT`` from looking busy, while
+    a port that a live process is listening on still fails to bind.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()

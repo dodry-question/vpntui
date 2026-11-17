@@ -44,11 +44,15 @@ def test_app_config(config, monkeypatch):
 
 def test_global_config(config, monkeypatch):
     monkeypatch.setattr(paths, "GLOBAL_CONFIG", config / "config.json")
+    monkeypatch.setattr(globalconfig, "port_free", lambda *a, **k: True)
     globalconfig.write("proxy", 0)
     data = json.loads((config / "config.json").read_text())
     assert [i["tag"] for i in data["inbounds"]] == ["socks", "http"]
     assert data["outbounds"][0]["tag"] == "proxy"
-    assert json.loads((config / "state.json").read_text()) == {"mode": "proxy", "server_index": 0}
+    assert [i["port"] for i in data["inbounds"]] == [10808, 10809]
+    state = json.loads((config / "state.json").read_text())
+    assert state["mode"] == "proxy" and state["server_index"] == 0
+    assert state["ports"] == {"socks": 10808, "http": 10809}
 
 
 def test_server_name_matches_by_content(tmp_path, monkeypatch):

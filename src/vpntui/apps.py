@@ -233,6 +233,15 @@ def _write_desktop(entry: dict, enabled: bool) -> bool:
 
 def _restore(entry: dict) -> bool:
     """Undo a rule: drop the user override or write back the original Exec."""
+    if entry.get("synthetic"):
+        path = _desktop_path(entry)
+        try:
+            if path and path.is_file() and path.parent.resolve() == paths.APPLICATIONS.resolve():
+                path.unlink()
+        except OSError:
+            pass
+        entry["managed"] = False
+        return True
     if entry.get("override") and entry.get("system_desktop"):
         target = pathlib.Path(entry.get("desktop") or "")
         try:
@@ -251,10 +260,51 @@ def _restore(entry: dict) -> bool:
     return False
 
 
+def ensure_launcher(entry: dict) -> dict:
+    """Give an arbitrary command its own desktop entry.
+
+    Installed applications already have a ``.desktop`` file; a command typed
+    by hand in the TUI does not.  We create a per-user shortcut whose ``Exec``
+    goes through ``vpntui launch-desktop``, so the app appears in the system
+    menu and the «always through VPN» rule can be toggled like for any other
+    application.
+    """
+    entry = dict(entry)
+    current = _desktop_path(entry)
+    if current and current.is_file():
+        return entry
+    name = str(entry.get("name") or entry.get("id") or "app")
+    slug = re.sub(r"[^a-z0-9._-]+", "-", str(entry.get("id") or name).lower()).strip("-") or "app"
+    target = paths.APPLICATIONS / f"vpntui-{slug}.desktop"
+    paths.APPLICATIONS.mkdir(parents=True, exist_ok=True)
+    if not target.is_file():
+        target.write_text(
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            f"Name={name}\n"
+            f"Comment=vpntui: {shlex.join(entry['cmd'])}\n"
+            "Exec=false %U\n"
+            "Icon=network-vpn\n"
+            "Terminal=false\n"
+            "Categories=Network;\n",
+            encoding="utf-8",
+        )
+    entry["desktop"] = str(target)
+    entry["synthetic"] = True
+    entry.setdefault("original_exec", "false %U")
+    if _write_desktop(entry, True):
+        entry["managed"] = True
+    return entry
+
+
 def enable_always(entry: dict, enabled: bool, write_desktop: bool = True) -> dict:
     """Mark an app as always-VPN and optionally rewrite its .desktop Exec."""
     entry = dict(entry)
     entry["always_vpn"] = bool(enabled)
+    if write_desktop and enabled:
+        path = _desktop_path(entry)
+        if not path or not path.is_file():
+            entry = ensure_launcher(entry)
     path = _desktop_path(entry)
     if write_desktop and path and path.is_file():
         if "original_exec" not in entry:

@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.0.2 — 2026-11-17
+
+Focus: a laptop that already runs other network tools must not end up offline
+or with a tunnel that silently does nothing.
+
+- **Conflict scan before every TUN start** (`vpntui doctor`): Cloudflare WARP,
+  zapret, Tailscale exit nodes, extra TUN devices, busy proxy ports, a legacy
+  user `xray.service`, dead `systemd-resolved` and IPv6 bypass. WARP is
+  disconnected automatically; a real blocker cancels the start with an
+  explanation instead of leaving a half-broken tunnel behind.
+- **zapret coexistence**: the root helper inserts `oifname "vpntui0" return`
+  into zapret's nftables/iptables chains and installs
+  `zapret.service.d/50-vpntui-exclude.conf`, so the exclusion survives
+  `systemctl restart zapret` and reboot. This fixes TLS EOF on youtube/x/discord
+  through the tunnel.
+- **Tunnel verification**: after start the helper checks the default route and
+  probes `api.ipify.org`. A dead tunnel is stopped automatically, so the
+  connection comes back on its own.
+- **Proxy ports move automatically** when `10808`/`10809` are taken (another
+  Xray/Clash, a stale process); the chosen ports are remembered in
+  `state.json` and shown in `vpntui status`.
+- **Applications list is fully generic**: any program or command can be added
+  (`a` in the TUI, `vpntui apps add --cmd …`); vpntui creates a launcher when
+  the program has no `.desktop` file. The list is independent of the global
+  mode — a marked app tunnels even when the main button is off. The old
+  Qoder-only wording is gone.
+- `vpntui doctor --fix` and `vpntui repair` apply the root-only fixes.
+- `vpntui uninstall` removes the zapret drop-in and its helper.
+
 ## 1.0.1 — 2026-11-13
 
 - Nix: add the missing `hatchling` build input, so the flake package and the

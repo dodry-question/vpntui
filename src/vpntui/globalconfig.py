@@ -4,9 +4,13 @@ from __future__ import annotations
 import json
 
 from . import paths
-from .util import load_json, save_json
+from .util import load_json, port_free, save_json
 
 TUN_ADDR = "198.18.0.1/30"
+TUN_NAME = "vpntui0"
+
+DEFAULT_SOCKS = 10808
+DEFAULT_HTTP = 10809
 
 
 def load_state() -> dict:
@@ -20,6 +24,49 @@ def load_state() -> dict:
 
 def save_state(state: dict) -> None:
     save_json(paths.STATE, state)
+
+
+def state_ports(state: dict | None = None) -> dict:
+    """Proxy ports from the state file, with sane defaults."""
+    state = state if state is not None else load_state()
+    ports = state.get("ports") if isinstance(state, dict) else None
+    result = {"socks": DEFAULT_SOCKS, "http": DEFAULT_HTTP}
+    if isinstance(ports, dict):
+        for key in result:
+            value = ports.get(key)
+            if isinstance(value, int) and 0 < value < 65536:
+                result[key] = value
+    return result
+
+
+def free_pair(start: int = DEFAULT_SOCKS) -> tuple[int, int]:
+    """First two free 127.0.0.1 ports at or above ``start``."""
+    chosen: list[int] = []
+    for candidate in range(start, start + 200):
+        if port_free(candidate):
+            chosen.append(candidate)
+            if len(chosen) == 2:
+                return chosen[0], chosen[1]
+    return DEFAULT_SOCKS, DEFAULT_HTTP
+
+
+def ensure_ports(state: dict | None = None, running: bool = False) -> dict:
+    """Keep the current ports while they are free, otherwise move them.
+
+    ``running`` means our own service owns the ports right now, so a busy
+    port is expected: never reshuffle in that case.
+    """
+    state = state if state is not None else load_state()
+    ports = state_ports(state)
+    if running:
+        state["ports"] = ports
+        return ports
+    if port_free(ports["socks"]) and port_free(ports["http"]):
+        state["ports"] = ports
+        return ports
+    socks, http = free_pair(DEFAULT_SOCKS)
+    state["ports"] = {"socks": socks, "http": http}
+    return state["ports"]
 
 
 def pick_outbound(index: int) -> dict:
@@ -44,27 +91,32 @@ def routing_rules() -> list[dict]:
     ]
 
 
-def build(mode: str, index: int) -> dict:
+def build(mode: str, index: int, ports: dict | None = None) -> dict:
     proxy = pick_outbound(index)
+    ports = ports or {"socks": DEFAULT_SOCKS, "http": DEFAULT_HTTP}
     direct = {"protocol": "freedom", "tag": "direct",
-              "settings": {"domainStrategy": "UseIP"}}
+              "settings": {}, "sockopt": {"domainStrategy": "UseIP"}}
     inbounds = []
     if mode == "vpn":
         inbounds.append({
             "tag": "tun-in",
             "protocol": "tun",
             "settings": {
+                "name": TUN_NAME,
                 "address": [TUN_ADDR],
                 "mtu": 1500,
                 "stack": "system",
                 "strictRoute": True,
+                # Xray installs and removes the default route itself.
+                "autoSystemRoutingTable": ["0.0.0.0/0"],
                 "sniff": {"enabled": True, "destOverride": ["http", "tls", "quic"]},
             },
         })
     inbounds += [
-        {"tag": "socks", "listen": "127.0.0.1", "port": 10808, "protocol": "socks",
-         "settings": {"udp": True}},
-        {"tag": "http", "listen": "127.0.0.1", "port": 10809, "protocol": "http"},
+        {"tag": "socks", "listen": "127.0.0.1", "port": int(ports["socks"]),
+         "protocol": "socks", "settings": {"udp": True}},
+        {"tag": "http", "listen": "127.0.0.1", "port": int(ports["http"]),
+         "protocol": "http"},
     ]
     return {
         "log": {"loglevel": "warning"},
@@ -75,10 +127,11 @@ def build(mode: str, index: int) -> dict:
     }
 
 
-def write(mode: str, index: int) -> tuple[str, int]:
+def write(mode: str, index: int, running: bool = False) -> tuple[str, int]:
     state = load_state()
+    ports = ensure_ports(state, running=running)
     state["mode"] = mode
     state["server_index"] = index
     save_state(state)
-    save_json(paths.GLOBAL_CONFIG, build(mode, index))
+    save_json(paths.GLOBAL_CONFIG, build(mode, index, ports))
     return mode, index

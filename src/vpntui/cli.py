@@ -191,6 +191,8 @@ def cmd_mode(args) -> int:
 def cmd_service(args) -> int:
     from . import manager
     _prepare()
+    if args.action == "status":
+        return 0 if manager.status() else 1
     result = getattr(manager, args.action)()
     print("OK" if result else "FAIL")
     return 0 if result else 1
@@ -278,7 +280,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("mode", help="global Xray mode")
     p.add_argument("value", choices=["proxy", "vpn"])
 
-    p = sub.add_parser("service", help="global Xray user service")
+    p = sub.add_parser("service", help="global Xray TUN service")
     p.add_argument("action", choices=["start", "stop", "restart", "status"])
 
     p = sub.add_parser("setup", help="install helper and desktop entry")
@@ -290,7 +292,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("uninstall", help="remove helper and desktop entry")
     p.add_argument("--purge", action="store_true", help="also delete configs and installed core")
 
-    sub.add_parser("doctor", help="diagnose the installation")
+    p = sub.add_parser("doctor", help="diagnose the installation and conflicts")
+    p.add_argument("--fix", action="store_true",
+                   help="apply safe fixes (zapret exclusion for the tunnel)")
+    sub.add_parser("repair", help="apply safe conflict fixes (zapret)")
     return parser
 
 
@@ -336,6 +341,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "uninstall":
         return setup.uninstall(args.purge)
     if args.command == "doctor":
-        return setup.doctor()
+        return setup.doctor(args.fix)
+    if args.command == "repair":
+        from . import manager
+        _prepare()
+        ok = manager.repair()
+        print("OK" if ok else "FAIL")
+        return 0 if ok else 1
     parser.print_help()
     return 0

@@ -1,18 +1,22 @@
-"""Global Xray mode and the ``vpntui-xray`` user service."""
+"""Global Xray mode: a system TUN service managed by the root helper.
+
+Global mode needs CAP_NET_ADMIN (TUN device + default route), so it cannot run
+as a systemd *user* service.  The privileged helper writes a validated config
+to /etc/vpntui, installs ``vpntui-xray.service`` and controls it over sudo.
+"""
 from __future__ import annotations
 
 import argparse
 import json
 import pathlib
-import shutil
 import subprocess
 import sys
 
-from . import core, globalconfig, paths
-from .util import load_json, notify, save_json
+from . import core, conflicts, globalconfig, paths
 
-UNIT = pathlib.Path.home() / ".config" / "systemd" / "user" / f"{paths.SERVICE}"
+SERVICE = "vpntui-xray.service"
 LEGACY_SERVICE = "xray.service"
+USER_UNIT = pathlib.Path.home() / ".config" / "systemd" / "user" / SERVICE
 
 
 def sh(*args, **kw) -> subprocess.CompletedProcess:
@@ -20,11 +24,34 @@ def sh(*args, **kw) -> subprocess.CompletedProcess:
 
 
 def is_active() -> bool:
-    return sh("systemctl", "--user", "is-active", paths.SERVICE).stdout.strip() == "active"
+    return sh("systemctl", "is-active", SERVICE).stdout.strip() == "active"
 
 
 def legacy_active() -> bool:
     return sh("systemctl", "--user", "is-active", LEGACY_SERVICE).stdout.strip() == "active"
+
+
+def _helper() -> str:
+    return str(paths.HELPER)
+
+
+def _global(action: str, payload: dict | None = None, watchdog: int = 0):
+    argv = ["sudo", "-n", _helper(), "global", action]
+    if watchdog:
+        argv += ["--watchdog", str(watchdog)]
+    if not pathlib.Path(_helper()).exists():
+        print(f"Хелпер не установлен: {_helper()}. Запусти: vpntui setup", file=sys.stderr)
+        return None
+    try:
+        return subprocess.run(
+            argv,
+            input=json.dumps(payload) if payload is not None else "",
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        print("sudo не найден", file=sys.stderr)
+        return None
 
 
 def _xray() -> pathlib.Path:
@@ -44,50 +71,66 @@ def validate() -> bool:
     return "Configuration OK" in (result.stdout + result.stderr)
 
 
-def ensure_service() -> pathlib.Path:
-    """Write/refresh the systemd user unit (idempotent)."""
-    binary = _xray()
-    UNIT.parent.mkdir(parents=True, exist_ok=True)
-    content = (
-        "[Unit]\n"
-        "Description=vpntui global Xray\n"
-        "Documentation=https://github.com/dodry-question/vpntui\n"
-        "After=network-online.target\n"
-        "Wants=network-online.target\n\n"
-        "[Service]\n"
-        "Type=simple\n"
-        f"ExecStart={binary} run -c {paths.GLOBAL_CONFIG}\n"
-        "Restart=on-failure\n"
-        "RestartSec=3\n"
-        "NoNewPrivileges=true\n\n"
-        "[Install]\n"
-        "WantedBy=default.target\n"
-    )
-    if not UNIT.is_file() or UNIT.read_text() != content:
-        UNIT.write_text(content)
-        sh("systemctl", "--user", "daemon-reload")
-    return UNIT
+def drop_user_unit() -> None:
+    """Remove the old unprivileged unit from earlier versions."""
+    if not USER_UNIT.is_file():
+        return
+    sh("systemctl", "--user", "disable", "--now", SERVICE)
+    try:
+        USER_UNIT.unlink()
+    except OSError:
+        return
+    sh("systemctl", "--user", "daemon-reload")
 
 
 # ---------------------------------------------------------------- WARP guard
 
 def warp_state() -> str:
-    if not shutil.which("warp-cli"):
-        return ""
-    result = sh("warp-cli", "--accept-tos", "status")
-    import re
-    match = re.search(r"Status(?: update)?:\s*(\w+)", (result.stdout or "") + (result.stderr or ""))
-    return match.group(1) if match else ""
+    return conflicts.warp_state()
 
 
 def ensure_warp_off(reason: str) -> bool:
     if warp_state() not in ("Connected", "Connecting"):
         return True
     if sh("warp-cli", "--accept-tos", "disconnect").returncode == 0:
+        from .util import notify
         notify("vpntui", f"WARP выключен: {reason}")
         return True
+    from .util import notify
     notify("vpntui", "WARP включён и не выключается — запуск VPN отменён", "critical")
     return False
+
+
+# ------------------------------------------------------------ conflict guard
+
+def preflight(running: bool | None = None) -> list:
+    """Scan the host for tools that fight with the tunnel (no root needed)."""
+    if running is None:
+        running = is_active()
+    return conflicts.scan(running=running)
+
+
+def guard(findings: list) -> bool:
+    """Auto-fix what is safe, refuse to start on a real blocker."""
+    for finding in conflicts.blockers(findings):
+        if finding.id == "warp" and ensure_warp_off("он забирает трафик у TUN"):
+            continue
+        print(f"vpntui: {finding.title}", file=sys.stderr)
+        if finding.detail:
+            print(f"        {finding.detail}", file=sys.stderr)
+        if finding.fix:
+            print(f"        исправление: {finding.fix}", file=sys.stderr)
+        return False
+    for finding in findings:
+        if finding.severity == "warn":
+            print(f"vpntui: [!] {finding.title}", file=sys.stderr)
+    return True
+
+
+def repair() -> bool:
+    """Apply root-only conflict fixes (zapret exclusion) without starting."""
+    result = _global("repair")
+    return bool(result and result.returncode == 0)
 
 
 # ---------------------------------------------------------------- operations
@@ -98,77 +141,110 @@ def _regenerate(mode: str | None = None, index: int | None = None) -> tuple[str,
     index = state.get("server_index", 0) if index is None else index
     if mode not in ("proxy", "vpn"):
         raise RuntimeError(f"неизвестный режим: {mode}")
-    if mode == "vpn" and not ensure_warp_off("два TUN одновременно конфликтуют"):
-        raise RuntimeError("WARP активен")
-    return globalconfig.write(mode, int(index))
+    # Пока сервис работает, порты заняты им самим — не двигаем их.
+    return globalconfig.write(mode, int(index), running=is_active())
 
 
-def _previous() -> tuple[str, int]:
-    state = load_json(paths.STATE, {}) or {}
-    return str(state.get("mode") or "proxy"), int(state.get("server_index", 0))
-
-
-def set_mode(mode: str, restart: bool = True) -> bool:
-    was_active, previous = is_active(), _previous()
-    try:
-        _regenerate(mode=mode)
-    except Exception as exc:
-        print(str(exc), file=sys.stderr)
-        return False
-    if not validate():
-        print("конфиг невалиден, откат", file=sys.stderr)
-        globalconfig.write(*previous)
-        return False
-    if was_active and restart:
-        ensure_service()
-        sh("systemctl", "--user", "restart", paths.SERVICE)
-    return True
-
-
-def set_server(index: int, restart: bool = True) -> bool:
-    was_active, previous = is_active(), _previous()
-    try:
-        _regenerate(index=index)
-    except Exception as exc:
-        print(str(exc), file=sys.stderr)
-        return False
-    if not validate():
-        print("конфиг невалиден, откат", file=sys.stderr)
-        globalconfig.write(*previous)
-        return False
-    if was_active and restart:
-        ensure_service()
-        sh("systemctl", "--user", "restart", paths.SERVICE)
-    return True
-
-
-def start() -> bool:
+def _start(watchdog: int = 0) -> bool:
+    drop_user_unit()
     if legacy_active():
         print("Сначала останови старый сервис: systemctl --user disable --now xray.service",
               file=sys.stderr)
         return False
-    state = globalconfig.load_state()
-    if not validate() or not paths.GLOBAL_CONFIG.is_file():
-        if not _regenerate():
-            return False
-    ensure_service()
-    sh("systemctl", "--user", "enable", paths.SERVICE)
-    result = sh("systemctl", "--user", "start", paths.SERVICE)
-    return result.returncode == 0 and is_active()
+    try:
+        mode, index = _regenerate()
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return False
+    if mode == "vpn" and not guard(preflight(running=is_active())):
+        return False
+    if not validate():
+        print("конфиг невалиден", file=sys.stderr)
+        return False
+    try:
+        payload = json.loads(paths.GLOBAL_CONFIG.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"не читается {paths.GLOBAL_CONFIG}: {exc}", file=sys.stderr)
+        return False
+    result = _global("start", payload, watchdog)
+    if result is None:
+        return False
+    if result.returncode != 0:
+        print((result.stderr or result.stdout).strip(), file=sys.stderr)
+        return False
+    info = {}
+    for line in reversed((result.stdout or "").strip().splitlines()):
+        try:
+            info = json.loads(line)
+            break
+        except ValueError:
+            continue
+    if info.get("verified"):
+        print(f"vpntui: трафик идёт через туннель, внешний IP "
+              f"{info.get('exit_ip') or '?'}", file=sys.stderr)
+    return is_active()
 
 
-def stop() -> bool:
-    sh("systemctl", "--user", "stop", paths.SERVICE)
-    return not is_active()
+def start() -> bool:
+    return _start()
 
 
 def restart() -> bool:
-    _regenerate()
-    if not validate():
+    return _start()
+
+
+def stop() -> bool:
+    result = _global("stop")
+    if result is None:
         return False
-    ensure_service()
-    sh("systemctl", "--user", "restart", paths.SERVICE)
-    return is_active()
+    return result.returncode == 0 and not is_active()
+
+
+def status() -> bool:
+    mode = globalconfig.load_state().get("mode", "proxy")
+    active = is_active()
+    ports = globalconfig.state_ports()
+    print("Режим:   ", "VPN / TUN" if mode == "vpn" else "системный прокси")
+    print("Сервис:  ", "активен" if active else "остановлен")
+    print("Прокси:  ", f"SOCKS 127.0.0.1:{ports['socks']} · "
+                      f"HTTP 127.0.0.1:{ports['http']}")
+    print("Конфиг:  ", paths.GLOBAL_CONFIG if mode else "-")
+    print("Ядро:    ", core.find_xray() or "не найдено")
+    if legacy_active():
+        print("Внимание: запущен старый xray.service — останови его, чтобы не конфликтовали порты")
+    return active
+
+
+def set_mode(mode: str, restart: bool = True) -> bool:
+    state = globalconfig.load_state()
+    index = int(state.get("server_index", 0))
+    try:
+        _regenerate(mode=mode, index=index)
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return False
+    if not validate():
+        print("конфиг невалиден", file=sys.stderr)
+        return False
+    if is_active() and restart:
+        return _start()
+    return True
+
+
+def set_server(index: int, restart: bool = True) -> bool:
+    state = globalconfig.load_state()
+    mode = str(state.get("mode") or "proxy")
+    try:
+        _regenerate(mode=mode, index=index)
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return False
+    if not validate():
+        print("конфиг невалиден", file=sys.stderr)
+        return False
+    if is_active() and restart:
+        return _start()
+    return True
 
 
 def server_rows() -> list[dict]:
@@ -190,14 +266,9 @@ def cmd_servers(as_json: bool = False) -> int:
 
 
 def cmd_status() -> int:
-    state = globalconfig.load_state()
-    print("Режим:   ", "VPN / TUN" if state.get("mode") == "vpn" else "системный прокси")
-    print("Сервис:  ", "активен" if is_active() else "остановлен")
-    if legacy_active():
-        print("Внимание:  запущен старый xray.service — останови его, чтобы не конфликтовали порты")
-    print("Ядро:    ", core.find_xray() or "не найдено", core.xray_version() or "")
+    status()
     rows = server_rows()
-    index = int(state.get("server_index", 0))
+    index = int(globalconfig.load_state().get("server_index", 0))
     if 0 <= index < len(rows):
         row = rows[index]
         print("Сервер:  ", f"#{index} {row['name']} — {row['host']}:{row['port']}")
@@ -209,7 +280,7 @@ def cmd_status() -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="vpntui manager")
     parser.add_argument("command", choices=[
-        "status", "servers", "set-mode", "set-server", "start", "stop", "restart", "install-service"])
+        "status", "servers", "set-mode", "set-server", "start", "stop", "restart"])
     parser.add_argument("value", nargs="?")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -244,9 +315,6 @@ def main(argv: list[str] | None = None) -> int:
         ok = restart()
         print("OK" if ok else "FAIL")
         return 0 if ok else 1
-    if args.command == "install-service":
-        print(ensure_service())
-        return 0
     return 2
 
 

@@ -142,6 +142,13 @@ def uninstall(remove_config: bool = False) -> int:
     helper = str(paths.HELPER)
     sudoers = str(paths.SUDOERS)
     script = (
+        "systemctl disable --now vpntui-xray.service >/dev/null 2>&1 || true\n"
+        "rm -f /etc/systemd/system/vpntui-xray.service\n"
+        "rm -f /etc/systemd/system/zapret.service.d/50-vpntui-exclude.conf\n"
+        "rm -f /usr/local/lib/vpntui/zapret-exclude-tun\n"
+        "rm -f /run/vpntui/zapret-exclude-tun\n"
+        "systemctl daemon-reload >/dev/null 2>&1 || true\n"
+        "rm -rf /etc/vpntui\n"
         f"rm -f {sudoers!r} {helper!r}\n"
         f"rmdir --ignore-fail-on-non-empty {str(paths.HELPER.parent)!r} 2>/dev/null || true\n"
     )
@@ -157,7 +164,20 @@ def uninstall(remove_config: bool = False) -> int:
     return 0
 
 
-def doctor() -> int:
+def _service_running() -> bool:
+    """Is the vpntui service up?  Readable without root."""
+    import shutil as _shutil
+    systemctl = _shutil.which("systemctl")
+    if not systemctl:
+        return False
+    result = subprocess.run([systemctl, "is-active", "vpntui-xray.service"],
+                            capture_output=True, text=True)
+    return (result.stdout or "").strip() == "active"
+
+
+def doctor(fix: bool = False) -> int:
+    from . import conflicts, globalconfig
+
     print(f"vpntui:      {' '.join(paths.entry_command())}")
     print(f"python:      {sys.version.split()[0]}")
     print(f"config:      {paths.CONFIG_DIR}")
@@ -174,4 +194,26 @@ def doctor() -> int:
     missing = missing_dependencies()
     print(f"зависимости: {'OK' if not missing else 'не хватает: ' + ', '.join(missing)}")
     print(f"серверов:    {len(__import__('vpntui.subscription', fromlist=['summary']).summary())}")
+    ports = globalconfig.state_ports()
+    running = _service_running()
+    print(f"сервис:      {'активен (TUN в работе)' if running else 'остановлен'}")
+    print(f"порты:       SOCKS 127.0.0.1:{ports['socks']} · "
+          f"HTTP 127.0.0.1:{ports['http']}")
+
+    if fix and paths.HELPER.is_file():
+        from . import manager
+        print("")
+        print("Применяю авто-исправления (zapret → исключение TUN)…")
+        print("  " + ("исключение применено" if manager.repair()
+                      else "не удалось (нет NOPASSWD или zapret не установлен)"))
+
+    print("")
+    print("Совместимость с другими VPN/DPI-инструментами:")
+    # While our own service runs, it owns 10808/10809 — do not report them as
+    # a foreign conflict.
+    findings = conflicts.scan(running=running)
+    print(conflicts.report(findings))
+    if conflicts.worst(findings) == "critical":
+        print("")
+        print("Есть блокирующий конфликт: TUN не запустится, пока он не устранён.")
     return 0

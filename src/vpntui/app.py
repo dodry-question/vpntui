@@ -40,6 +40,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
+from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import DataTable, Input, RichLog, Static
 
@@ -284,11 +285,11 @@ def settings() -> dict:
 
 
 def is_active() -> bool:
-    return sh("systemctl", "--user", "is-active", SERVICE).stdout.strip() == "active"
+    return sh("systemctl", "is-active", SERVICE).stdout.strip() == "active"
 
 
 def service_mono() -> float:
-    r = sh("systemctl", "--user", "show", SERVICE,
+    r = sh("systemctl", "show", SERVICE,
            "-p", "ActiveEnterTimestampMonotonic", "--value")
     try:
         return int(r.stdout.strip()) / 1_000_000
@@ -908,6 +909,15 @@ ActionRow:hover, ActionRow:focus { background: $boost; color: $accent; }
 .bar-row { height: 1; margin-top: 1; }
 .grow { width: 1fr; }
 
+AddAppScreen { align: center middle; background: $background 70%; }
+AddAppScreen > Vertical {
+    width: 74;
+    height: auto;
+    padding: 1 2;
+    background: $surface;
+    border: round $accent;
+}
+
 #dash-stats { height: 3; margin-bottom: 1; }
 .stat {
     width: 1fr;
@@ -1240,6 +1250,44 @@ class ProxiesView(Vertical):
 
 # ---------------------------------------------------------------- Приложения
 
+class AddAppScreen(ModalScreen[tuple[str, str] | None]):
+    """Ask for any command to run inside its own VPN tunnel."""
+
+    BINDINGS = [("escape", "cancel", "Отмена")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static("[bold]Добавить приложение в VPN[/]")
+            yield Static(
+                "[dim]Любая программа или команда. Она получит собственный "
+                "туннель и будет ходить через выбранный сервер, даже если "
+                "глобальный VPN выключен.[/]", classes="dim")
+            yield Input(placeholder="команда, напр. /usr/bin/brave-browser-stable",
+                        id="add-cmd")
+            yield Input(placeholder="название (необязательно)", id="add-name")
+            yield Static("[dim]Enter — дальше / добавить · Esc — отмена[/]",
+                         classes="dim")
+
+    def on_mount(self) -> None:
+        self.query_one("#add-cmd", Input).focus()
+
+    @on(Input.Submitted, "#add-cmd")
+    def _next_field(self, event: Input.Submitted) -> None:
+        self.query_one("#add-name", Input).focus()
+
+    @on(Input.Submitted, "#add-name")
+    def _submit(self, event: Input.Submitted) -> None:
+        self._finish()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _finish(self) -> None:
+        command = self.query_one("#add-cmd", Input).value.strip()
+        name = self.query_one("#add-name", Input).value.strip()
+        self.dismiss((command, name) if command else None)
+
+
 class AppsView(Vertical):
     """Installed applications and their always-VPN rules."""
 
@@ -1247,7 +1295,8 @@ class AppsView(Vertical):
         yield Input(placeholder="Фильтр по названию или команде…", id="apps-filter")
         yield DataTable(id="apps-table")
         yield Static(
-            "Enter — всегда через VPN · s — сервер · l — запустить · d — убрать",
+            "Enter — всегда через VPN · a — добавить команду · s — сервер · "
+            "l — запустить · d — убрать",
             markup=False, classes="hintbar")
         yield Static(id="apps-summary")
 
@@ -1304,7 +1353,8 @@ class AppsView(Vertical):
             table.move_cursor(row=table.get_row_index(selected))
         self.query_one("#apps-summary", Static).update(
             f"[bold]Установлено: {count}[/]  [dim]· через VPN: {auto} · "
-            f"стрелка + Enter переключает правило[/]")
+            f"приложения ходят в своём туннеле независимо от главной кнопки · "
+            f"a — добавить команду[/]")
 
     @on(DataTable.RowSelected, "#apps-table")
     def _row_selected(self, event: DataTable.RowSelected) -> None:
@@ -1742,7 +1792,7 @@ class LogsView(Vertical):
     async def _journal_worker(self) -> None:
         try:
             proc = await asyncio.create_subprocess_exec(
-                "journalctl", "--user", "-u", SERVICE, "-n", "250",
+                "journalctl", "-u", SERVICE, "-n", "250",
                 "--no-pager", "-o", "short-iso", "-f",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         except OSError as exc:
@@ -1853,9 +1903,10 @@ class SettingsView(VerticalScroll):
         with Vertical(classes="card"):
             yield Static("[bold]Приложения через VPN[/]")
             yield Static(
-                "[dim]Правила «всегда через VPN» для установленных программ — "
-                "в разделе «Приложения» (8). Qoder сохраняет свой прежний "
-                "способ запуска.[/]", classes="dim")
+                "[dim]Список любых программ: отметь приложение — и оно всегда "
+                "запускается в собственном туннеле, со своим сервером, даже "
+                "если глобальный VPN выключен. Добавить можно и произвольную "
+                "команду (раздел «Приложения», клавиша a).[/]", classes="dim")
             yield ActionRow("goto_apps", "▸ Открыть «Приложения»", id="set-apps")
 
         with Vertical(classes="card"):
@@ -1948,7 +1999,7 @@ class VpnTuiApp(App):
         "rules": "a — добавить · d — удалить · [ ] — порядок · s — сохранить",
         "logs": "c — очистить · фильтр — подстрока",
         "settings": "↑↓ — поле · ←→ — значение · Esc — меню",
-        "apps": "Enter — всегда через VPN · s — сервер · l — запуск · d — убрать",
+        "apps": "Enter — всегда через VPN · a — добавить команду · s — сервер · l — запуск · d — убрать",
     }
 
     def __init__(self) -> None:
@@ -2242,6 +2293,32 @@ class VpnTuiApp(App):
     def action_rule_add(self) -> None:
         if self.current == "rules":
             self.query_one("#rules-value", Input).focus()
+        elif self.current == "apps":
+            self.push_screen(AddAppScreen(), self.add_app_entry)
+
+    def add_app_entry(self, result: tuple[str, str] | None) -> None:
+        """Register a hand-written command as an always-VPN application."""
+        if not result:
+            return
+        command, name = result
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            self.notify(f"Не разобрать команду: {exc}", severity="error")
+            return
+        if not argv:
+            return
+        label = name or pathlib.Path(argv[0]).name or "custom"
+        app_id = re.sub(r"[^a-z0-9._-]+", "-", label.lower()).strip("-") or "custom"
+        entry = {"id": app_id, "name": label, "cmd": argv}
+        try:
+            entry = app_rules.enable_always(entry, True)
+        except (app_rules.DesktopError, OSError) as exc:
+            self.notify(f"{label}: {exc}", severity="error")
+            return
+        self.refresh_all(True)
+        self.query_one(AppsView).rebuild()
+        self.notify(f"{label}: добавлено и включено через VPN")
 
     def action_rule_delete(self) -> None:
         if self.current == "rules":
@@ -2387,12 +2464,13 @@ class VpnTuiApp(App):
         def run():
             active = is_active()
             if active:
-                r = sh("systemctl", "--user", "stop", SERVICE)
+                r = manager("stop")
                 ok = r.returncode == 0 and not is_active()
                 msg = "Глобальный xray остановлен" if ok else "Не удалось остановить xray"
             else:
-                mode = state().get("mode", "proxy")
-                r = manager("set-mode", mode)
+                # Кнопка должна поднимать сервис: set-mode лишь перезаписывает конфиг
+                # и ничего не запускает, если сервис был остановлен.
+                r = manager("start")
                 ok = r.returncode == 0 and r.stdout.strip() == "OK" and is_active()
                 msg = "Глобальный xray включён" if ok else "Не удалось включить xray; смотри логи"
             self.call_from_thread(self.refresh_all, True)
@@ -2421,7 +2499,7 @@ class VpnTuiApp(App):
 
     def _restart_worker(self):
         def run():
-            r = manager("set-mode", state().get("mode", "proxy"))
+            r = manager("restart")
             ok = r.returncode == 0 and r.stdout.strip() == "OK" and is_active()
             self.call_from_thread(self.refresh_all, True)
             self.call_from_thread(self.notify,
