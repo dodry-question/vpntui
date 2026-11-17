@@ -128,8 +128,7 @@ def cmd_apps(args) -> int:
         if args.always:
             entry["always_vpn"] = True
         try:
-            entry = apps.enable_always(entry, bool(entry.get("always_vpn")),
-                                       write_desktop=bool(entry.get("desktop")))
+            entry = apps.enable_always(entry, bool(entry.get("always_vpn")))
         except apps.DesktopError as exc:
             print(f"Ошибка ярлыка: {exc}", file=sys.stderr)
             return 1
@@ -258,7 +257,8 @@ def build_parser() -> argparse.ArgumentParser:
     q = sp.add_parser("add")
     q.add_argument("id", nargs="?")
     q.add_argument("--name")
-    q.add_argument("--cmd", nargs=argparse.REMAINDER)
+    q.add_argument("--cmd", nargs=argparse.REMAINDER,
+                   help="command to run; put --always/--name before --cmd")
     q.add_argument("--always", action="store_true")
     q = sp.add_parser("remove")
     q.add_argument("id")

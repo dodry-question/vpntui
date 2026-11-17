@@ -9,7 +9,7 @@ servers, rules, sessions, logs and the optional global proxy/TUN mode.
 
 ```
 normal network:  Brave (normal) ───────────────► internet
-VPN network:     Roblox/Qoder ── netns ──► Xray ──► subscription ──► internet
+VPN network:     Roblox/Steam ── netns ──► Xray ──► subscription ──► internet
 ```
 
 ## Features
@@ -117,7 +117,7 @@ vpntui
   namespace, TUN device and routes;
 * `/etc/sudoers.d/vpntui` — permission to run **only that helper** without a
   password (required for desktop shortcuts);
-* a desktop entry and a browser wrapper used by applications such as Qoder.
+* a desktop entry and a browser wrapper used by the applications you launch.
 
 For a root-owned Xray installation (recommended with the helper):
 
@@ -172,9 +172,11 @@ vpntui sub update               # refresh the saved URL
 vpntui server list              # list servers
 vpntui apps installed           # list installed .desktop applications
 vpntui apps add brave --always  # enable "always through VPN" for Brave
-vpntui apps launch qoder        # launch it now
+vpntui apps add mine --name "My Tool" --always --cmd /opt/mytool/run
+vpntui apps launch brave        # launch it now
 vpntui core install             # download/verify Xray-core
-vpntui doctor                   # diagnose paths, core, helper, sudo
+vpntui doctor                   # diagnose paths, core, helper, conflicts
+vpntui doctor --fix             # safe fixes (zapret exclusion)
 ```
 
 ### Keys
@@ -222,9 +224,9 @@ Subscription URLs may contain access tokens: `subscription-source.json` and
 `subscription.json` are written with mode `0600` and are ignored by git.
 
 The old layout (`~/.config/xray`, `~/.config/vpn`, `~/scripts/vpn`) is
-imported once, read-only. An existing Qoder desktop shortcut is preserved
-exactly as it is; the rule only starts managing it if you toggle it in the new
-Applications page.
+imported once, read-only. An application shortcut that already had its own VPN
+wrapper is preserved exactly as it is; the rule only starts managing it if you
+toggle it in the new Applications page.
 
 ## Security notes
 
