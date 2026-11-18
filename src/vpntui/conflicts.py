@@ -269,6 +269,24 @@ def scan(running: bool = False) -> list[Finding]:
             "он занимает те же порты, что и vpntui.",
             "systemctl --user disable --now xray.service", auto=False))
 
+    # --- legacy launcher -------------------------------------------------
+    # Команда `vpntui` может указывать на старую установку (~/scripts/vpn):
+    # её TUN-режим молча не работает — xray под юзером не может заменить
+    # маршрут по умолчанию, сайты показывают реальный IP при «включённом» VPN.
+    launcher = shutil.which("vpntui")
+    if launcher:
+        try:
+            resolved = str(pathlib.Path(launcher).resolve())
+        except OSError:
+            resolved = ""
+        if resolved.startswith(str(paths.LEGACY_VPN)):
+            found.append(Finding(
+                "legacy-launcher", "warn",
+                f"команда vpntui запускает старую версию ({launcher})",
+                "TUN-режим старой версии молча не работает: трафик идёт напрямую "
+                "при статусе «ПОДКЛЮЧЕНО».",
+                "vpntui setup — перепривяжет команду на эту установку", auto=False))
+
     # --- DNS ------------------------------------------------------------
     resolv = ""
     try:

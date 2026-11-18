@@ -83,6 +83,47 @@ def install_browser_wrapper() -> pathlib.Path:
     return target
 
 
+def _launcher_path() -> pathlib.Path:
+    return pathlib.Path.home() / ".local" / "bin" / "vpntui"
+
+
+def launcher_shim() -> str:
+    """Shell-обёртка, которая запускает именно эту установку vpntui."""
+    return "#!/bin/bash\nexec " + shlex.join(paths.entry_command()) + " \"$@\"\n"
+
+
+def repoint_launcher() -> str:
+    """Перепривязать ~/.local/bin/vpntui с легаси-установки на эту.
+
+    Старый лаунчер (~/scripts/vpn) запускает прежнее приложение, чей
+    TUN-режим молча не работает: пользователь видит «ПОДКЛЮЧЕНО», а
+    трафик идёт напрямую. Идентичный файл — ничего не делаем; иначе
+    сохраняем прежний лаунчер в backups и пишем обёртку.
+    """
+    target = _launcher_path()
+    desired = launcher_shim()
+    try:
+        if target.read_text() == desired:
+            return ""
+    except OSError:
+        pass
+    if target.exists() or target.is_symlink():
+        backup_dir = paths.DESKTOP_BACKUPS / "bin"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(target, backup_dir / "vpntui.previous")
+        except OSError:
+            pass
+    # Если это симлинк на легаси-скрипт, запись через него затёрла бы
+    # целевой файл: сначала разрываем ссылку.
+    if target.is_symlink():
+        target.unlink()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(desired)
+    target.chmod(0o755)
+    return f"Команда vpntui перепривязана: {target}"
+
+
 def desktop_entry() -> pathlib.Path:
     executable = shlex.join(paths.entry_command())
     content = (
@@ -132,6 +173,9 @@ def setup(install_helper_flag: bool = True, install_desktop: bool = True,
     if install_helper_flag:
         if not install_helper():
             return 1
+    repointed = repoint_launcher()
+    if repointed:
+        print(repointed)
     if install_desktop:
         print(f"Ярлык: {desktop_entry()}")
     print("Готово. Запусти: vpntui")

@@ -117,3 +117,26 @@ def test_ensure_launcher_keeps_existing_desktop(tmp_path, monkeypatch):
     assert entry["desktop"] == str(desktop)
     assert not entry.get("synthetic")
     assert sorted(p.name for p in root.iterdir()) == ["real.desktop"]
+
+
+def test_legacy_launcher_is_reported(monkeypatch, tmp_path):
+    _quiet(monkeypatch)
+    monkeypatch.setattr(paths, "LEGACY_VPN", tmp_path / "legacy" / "vpn")
+    monkeypatch.setattr(conflicts.shutil, "which",
+                        lambda name: str(paths.LEGACY_VPN / "vpntui")
+                        if name == "vpntui" else None)
+
+    findings = conflicts.scan()
+    legacy = next(f for f in findings if f.id == "legacy-launcher")
+    assert legacy.severity == "warn"
+    assert "старую версию" in legacy.title
+
+
+def test_current_launcher_not_reported(monkeypatch, tmp_path):
+    _quiet(monkeypatch)
+    monkeypatch.setattr(paths, "LEGACY_VPN", tmp_path / "legacy" / "vpn")
+    monkeypatch.setattr(conflicts.shutil, "which",
+                        lambda name: "/usr/local/bin/vpntui" if name == "vpntui" else None)
+
+    findings = conflicts.scan()
+    assert not any(f.id == "legacy-launcher" for f in findings)

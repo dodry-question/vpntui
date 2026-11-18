@@ -2,6 +2,14 @@
 
 ## Unreleased — 2026-11-18
 
+- **Legacy launcher takeover**: `vpntui setup` now repoints
+  `~/.local/bin/vpntui` to this installation (previous launcher is backed up
+  in `desktop-backups/bin/`), and `vpntui doctor` warns when the command
+  still resolves into the old `~/scripts/vpn` layout. The legacy app's TUN
+  mode silently does nothing — its user-run Xray creates the tunnel device
+  but cannot replace the default route, so sites show the real IP while the
+  panel says «ПОДКЛЮЧЕНО». This made the whole VPN look broken even though
+  this installation tunnels correctly.
 - **Dashboard warns about live per-app sessions**: after the global VPN is
   switched off, the hero status now reads `ОТКЛЮЧЕНО · N сессий через VPN`
   instead of plain `ОТКЛЮЧЕНО`, and turning the global toggle off posts a
