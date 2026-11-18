@@ -14,7 +14,7 @@
 
 python3Packages.buildPythonApplication (finalAttrs: {
   pname = "vpntui";
-  version = "1.0.2";
+  version = "1.0.3";
   pyproject = true;
 
   src = fetchFromGitHub {

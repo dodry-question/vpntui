@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 2026-11-18
+## 1.0.3 — 2026-11-18
 
 - **Legacy launcher takeover**: `vpntui setup` now repoints
   `~/.local/bin/vpntui` to this installation (previous launcher is backed up
