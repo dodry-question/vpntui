@@ -117,6 +117,15 @@ _EMOJI = re.compile(
 
 # ---------------------------------------------------------------- утилиты
 
+def plural_sessions(n: int) -> str:
+    """Русское склонение: 1 сессия, 2 сессии, 5 сессий."""
+    if n % 10 == 1 and n % 100 != 11:
+        return "сессия"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return "сессии"
+    return "сессий"
+
+
 def clean(text: str | None) -> str:
     return re.sub(r"\s+", " ", _EMOJI.sub(" ", text or "")).strip(" -—·|")
 
@@ -1024,6 +1033,14 @@ class DashboardView(VerticalScroll):
         if active:
             hero.update(f"[bold {C_OK}]●  ПОДКЛЮЧЕНО[/]\n"
                         f"[dim]глобальный xray активен[/]")
+        elif sessions:
+            # Глобальный туннель выключен, но per-app сессии продолжают
+            # туннелироваться: без этой подсказки выглядит, будто весь
+            # трафик уже прямой, а сайты показывают VPN.
+            hero.update(f"[bold {C_WARN}]○  ОТКЛЮЧЕНО · {len(sessions)} "
+                        f"{plural_sessions(len(sessions))} через VPN[/]\n"
+                        f"[dim]глобальный xray выключен, но per-app сессии "
+                        f"продолжают туннелироваться[/]")
         else:
             hero.update(f"[bold {C_BAD}]○  ОТКЛЮЧЕНО[/]\n"
                         f"[dim]глобальный xray выключен[/]")
@@ -2466,15 +2483,28 @@ class VpnTuiApp(App):
             if active:
                 r = manager("stop")
                 ok = r.returncode == 0 and not is_active()
-                msg = "Глобальный xray остановлен" if ok else "Не удалось остановить xray"
+                msg = "Глобальный xray остановлен"
+                severity = "information"
+                if ok:
+                    # Per-app сессии живут независимо от глобального туннеля:
+                    # предупреди, что часть трафика всё ещё идёт через VPN,
+                    # иначе сайты покажут VPN при «выключенном» статусе.
+                    left = len(read_sessions())
+                    if left:
+                        msg = (f"Глобальный xray остановлен, но {left} "
+                               f"per-app {plural_sessions(left)} продолжают "
+                               f"идти через VPN; управляй ими в разделе "
+                               f"«Подключения»")
+                        severity = "warning"
             else:
                 # Кнопка должна поднимать сервис: set-mode лишь перезаписывает конфиг
                 # и ничего не запускает, если сервис был остановлен.
                 r = manager("start")
                 ok = r.returncode == 0 and r.stdout.strip() == "OK" and is_active()
                 msg = "Глобальный xray включён" if ok else "Не удалось включить xray; смотри логи"
+                severity = "information" if ok else "error"
             self.call_from_thread(self.refresh_all, True)
-            self.call_from_thread(self.notify, msg, severity="information" if ok else "error")
+            self.call_from_thread(self.notify, msg, severity=severity)
         return run
 
     def _mode_worker(self, mode: str):

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — 2026-11-18
+
+- **Dashboard warns about live per-app sessions**: after the global VPN is
+  switched off, the hero status now reads `ОТКЛЮЧЕНО · N сессий через VPN`
+  instead of plain `ОТКЛЮЧЕНО`, and turning the global toggle off posts a
+  warning when per-app sessions keep tunneling. Per-app sessions
+  intentionally stay up when the main button is off, but before this change
+  a browser opened through the VPN kept showing a VPN exit IP on
+  ip-checking sites while the panel said the VPN was disconnected — the
+  main reason sites like browserleaks still reported "VPN on" after the
+  toggle.
+
 ## 1.0.2 — 2026-11-17
 
 Focus: a laptop that already runs other network tools must not end up offline

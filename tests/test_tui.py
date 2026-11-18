@@ -39,6 +39,35 @@ SCRIPT = textwrap.dedent("""
     asyncio.run(main())
 """)
 
+HERO_SCRIPT = textwrap.dedent("""
+    import asyncio
+
+    from vpntui import app as ui
+
+    async def main():
+        ui.is_active = lambda: False
+        ui.service_mono = lambda: 0.0
+        ui.read_sessions = lambda: [
+            {"app": "brave", "exit_ip": "185.189.46.61", "country": "SE",
+             "started": 0, "_file": "x.json"}]
+        ui.net_bytes = lambda: (0, 0)
+        app = ui.VpnTuiApp()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            hero = str(app.query_one("#dash-hero").visual)
+            assert "ОТКЛЮЧЕНО" in hero, hero
+            assert "1 сессия через VPN" in hero, hero
+            ui.read_sessions = lambda: []
+            app.refresh_all(True)
+            await pilot.pause()
+            hero = str(app.query_one("#dash-hero").visual)
+            assert "глобальный xray выключен" in hero, hero
+            assert "сессия" not in hero, hero
+        print("OK hero")
+
+    asyncio.run(main())
+""")
+
 
 def test_tui_layout(tmp_path):
     config = tmp_path / "config"
@@ -76,3 +105,40 @@ def test_tui_layout(tmp_path):
                             capture_output=True, text=True, timeout=90)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "OK 8" in result.stdout
+
+
+def test_tui_hero_warns_about_sessions(tmp_path):
+    """Глобальный VPN выключен, но per-app сессии живы: дашборд обязан об
+    этом предупредить, иначе сайты показывают VPN при статусе «ОТКЛЮЧЕНО»."""
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "candidates.json").write_text(
+        '[{"protocol":"vless","settings":{"vnext":[{"address":"127.0.0.1",'
+        '"port":443,"users":[{"id":"u","encryption":"none"}]}]},'
+        '"streamSettings":{"network":"tcp","security":"none"}}]')
+    (config / "subscription.json").write_text(
+        '[{"remarks":"Test","outbounds":[{"protocol":"vless","settings":'
+        '{"vnext":[{"address":"127.0.0.1","port":443,"users":'
+        '[{"id":"u","encryption":"none"}]}]},"streamSettings":'
+        '{"network":"tcp","security":"none"}}]}]')
+    (config / "state.json").write_text('{"mode":"proxy","server_index":0}')
+    (config / "apps.json").write_text("[]")
+    (config / "rules.json").write_text('{"default":"proxy","rules":[]}')
+    data = tmp_path / "data"
+    (data / "applications").mkdir(parents=True)
+
+    env = {
+        **os.environ,
+        "PYTHONPATH": str((__import__("pathlib").Path(__file__).parents[1] / "src")),
+        "VPNTUI_CONFIG_DIR": str(config),
+        "VPNTUI_DATA_DIR": str(data),
+        "VPNTUI_STATE_DIR": str(tmp_path / "state"),
+        "VPNTUI_RUNTIME_DIR": str(tmp_path / "run"),
+        "VPNTUI_XRAY": "/bin/true",
+        "XDG_DATA_HOME": str(data),
+        "XDG_DATA_DIRS": str(data),
+    }
+    result = subprocess.run([sys.executable, "-c", HERO_SCRIPT], env=env,
+                            capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "OK hero" in result.stdout
