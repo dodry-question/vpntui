@@ -21,7 +21,7 @@ python3Packages.buildPythonApplication (finalAttrs: {
     owner = "dodry-question";
     repo = "vpntui";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-0934GGEieal2uiZOdtGwG6plc66G3+swM9LIwOJVRIc=";
+    hash = "sha256-uN7jZXLoXin4Wn5UXsdj0DiYfYy8gMmnX4dwRlsvVQ8=";
   };
 
   build-system = [ python3Packages.hatchling ];
